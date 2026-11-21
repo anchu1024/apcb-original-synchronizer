@@ -7,7 +7,8 @@
     "storage"
   ],
   "host_permissions": [
-    "https://atcoder.jp/contests/*"
+    "https://atcoder.jp/contests/*",
+    "https://kenkoooo.com/*"
   ],
   "background": {
     "service_worker": "background.js"

@@ -101,3 +101,40 @@ test("Chrome extension uses storage and validated tab creation", () => {
   assert.match(background, /chrome\.tabs\.create/);
   assert.match(background, /url\.origin !== "https:\/\/atcoder\.jp"/);
 });
+
+test("difficulty correction and official color palette", () => {
+  const scriptWindow = loadScript();
+  assert.equal(scriptWindow.normalizeDifficulty(-100), 311);
+  assert.equal(scriptWindow.normalizeDifficulty(400), 400);
+  assert.equal(scriptWindow.normalizeDifficulty(undefined), null);
+  assert.equal(scriptWindow.getDifficultyColor(399), "#808080");
+  assert.equal(scriptWindow.getDifficultyColor(400), "#804000");
+  assert.equal(scriptWindow.getDifficultyColor(1200), "#00C0C0");
+  assert.equal(scriptWindow.getDifficultyColor(2200), "#C0C000");
+  assert.equal(scriptWindow.getDifficultyColor(2400), "#FF8000");
+  assert.equal(scriptWindow.getDifficultyColor(2800), "#FF0000");
+});
+
+test("difficulty cache and Chrome MV3 background fetch are configured", () => {
+  assert.match(source, /PROBLEM_MODELS_TTL_MS: 24 \* 60 \* 60 \* 1000/);
+  assert.match(source, /apcb-difficulty-circle/);
+  assert.match(source, /beforebegin/);
+  assert.match(source, /Difficulty: \$\{difficulty\}/);
+  assert.match(source, /fillRatio/);
+  assert.match(source, /linear-gradient\(to top/);
+  assert.match(source, /difficulty >= 3200/);
+
+  const manifest = JSON.parse(fs.readFileSync(
+    new URL("../manifest.json", `file://${__dirname}/`).pathname,
+    "utf8"
+  ));
+  assert.ok(manifest.host_permissions.includes("https://kenkoooo.com/*"));
+
+  const background = fs.readFileSync(
+    new URL("../background.js", `file://${__dirname}/`).pathname,
+    "utf8"
+  );
+  assert.match(background, /problem_models_cache/);
+  assert.match(background, /24 \* 60 \* 60 \* 1000/);
+  assert.match(background, /kenkoooo\.com\/atcoder\/resources\/problem-models\.json/);
+});

@@ -2,12 +2,16 @@ const CONFIG = Object.freeze({
   LECTURE_CONTEST_REGEX: /^apcb_exercise_/,
   PENDING_TRANSFER_TTL_MS: 10 * 60 * 1000,
   SUBMITTED_TASKS_KEY: "submitted_tasks",
-  PENDING_TRANSFER_KEY: "pending_transfer"
+  PENDING_TRANSFER_KEY: "pending_transfer",
+  PROBLEM_MODELS_CACHE_KEY: "problem_models_cache",
+  PROBLEM_MODELS_URL: "https://kenkoooo.com/atcoder/resources/problem-models.json",
+  PROBLEM_MODELS_TTL_MS: 24 * 60 * 60 * 1000
 });
 
 let chromeStorageCache = {
   submitted_tasks: {},
-  pending_transfer: null
+  pending_transfer: null,
+  problem_models_cache: null
 };
 
 function normalizeAtCoderUrl(url) {
@@ -40,6 +44,180 @@ function resolveOriginalTaskUrl(lectureTaskUrl) {
     return `https://atcoder.jp/contests/${originalContestId}/tasks/${taskId}`;
   } catch (_) {
     return null;
+  }
+}
+
+function extractTaskId(url) {
+  try {
+    const match = new URL(url, "https://atcoder.jp").pathname.match(
+      /\/tasks\/([^/?#]+)\/?$/
+    );
+    return match ? decodeURIComponent(match[1]) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function normalizeDifficulty(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  if (value < 0) {
+    return Math.round(400 / Math.exp((1 - value) / 400));
+  }
+  return value;
+}
+
+function getDifficultyColor(difficulty) {
+  if (difficulty < 400) return "#808080";
+  if (difficulty < 800) return "#804000";
+  if (difficulty < 1200) return "#008000";
+  if (difficulty < 1600) return "#00C0C0";
+  if (difficulty < 2000) return "#0000FF";
+  if (difficulty < 2400) return "#C0C000";
+  if (difficulty < 2800) return "#FF8000";
+  return "#FF0000";
+}
+
+function getProblemModels() {
+  const cache = chromeStorageCache.problem_models_cache;
+  if (
+    cache?.models &&
+    Number.isFinite(cache.timestamp) &&
+    Date.now() - cache.timestamp < CONFIG.PROBLEM_MODELS_TTL_MS
+  ) {
+    return cache.models;
+  }
+  return null;
+}
+
+function insertDifficultyCircle(link, difficulty) {
+  const color = getDifficultyColor(difficulty);
+  const fillRatio = Math.min(1, Math.max(0, (difficulty % 400) / 400));
+  const fillPercent = fillRatio * 100;
+
+  let circle = link.previousElementSibling;
+  if (!circle?.classList?.contains("apcb-difficulty-circle")) {
+    circle = document.createElement("span");
+    circle.className = "apcb-difficulty-circle";
+  }
+
+  circle.title = `Difficulty: ${difficulty}`;
+  circle.setAttribute("aria-label", `Difficulty: ${difficulty}`);
+  circle.style.setProperty("display", "inline-block", "important");
+  circle.style.setProperty("width", "12px", "important");
+  circle.style.setProperty("height", "12px", "important");
+  circle.style.setProperty("border", `1px solid ${color}`, "important");
+  circle.style.setProperty("border-radius", "50%", "important");
+  circle.style.setProperty("margin-right", "4px", "important");
+  circle.style.setProperty("vertical-align", "middle", "important");
+  circle.style.setProperty("box-shadow", `0 0 2px ${color}`, "important");
+
+  if (difficulty >= 3200) {
+    const silverOrGold = difficulty >= 3600
+      ? "linear-gradient(to bottom, #fff4a3 0%, #ffd700 50%, #c8a800 100%)"
+      : "linear-gradient(to bottom, #ffffff 0%, #c0c0c0 50%, #808080 100%)";
+    circle.style.setProperty("background", silverOrGold, "important");
+  } else {
+    circle.style.setProperty(
+      "background",
+      `linear-gradient(to top, ${color} ${fillPercent}%, transparent ${fillPercent}%)`,
+      "important"
+    );
+  }
+
+  if (circle !== link.previousElementSibling) {
+    link.insertAdjacentElement("beforebegin", circle);
+  }
+  link.style.setProperty("color", color, "important");
+}
+
+function applyDifficultyToLink(link) {
+  const models = getProblemModels();
+  if (!models) return false;
+  const taskId = extractTaskId(link.href);
+  if (!taskId) return false;
+  const rawDifficulty = models[taskId]?.difficulty;
+  const difficulty = normalizeDifficulty(rawDifficulty);
+  if (difficulty === null) return false;
+  insertDifficultyCircle(link, difficulty);
+  return true;
+}
+
+function applyDifficultyDisplays() {
+  if (!isLectureContestUrl(location.href)) return;
+  const pathname = new URL(location.href).pathname;
+
+  if (/\/tasks\/?$/.test(pathname)) {
+    document.querySelectorAll("tbody tr").forEach(row => {
+      const links = Array.from(row.querySelectorAll("a[href*='/tasks/']"));
+      if (links.length === 0) return;
+
+      links.forEach(link => {
+        const models = getProblemModels();
+        const taskId = extractTaskId(link.href);
+        const difficulty = normalizeDifficulty(models?.[taskId]?.difficulty);
+        if (difficulty !== null) {
+          link.style.setProperty("color", getDifficultyColor(difficulty), "important");
+        }
+      });
+
+      let problemNameLink = links.length >= 2 ? links[1] : links[0];
+      const hrefGroups = new Map();
+      links.forEach(link => {
+        const href = normalizeAtCoderUrl(link.href);
+        const matches = hrefGroups.get(href) || [];
+        matches.push(link);
+        hrefGroups.set(href, matches);
+      });
+      for (const matches of hrefGroups.values()) {
+        if (matches.length >= 2) {
+          problemNameLink = matches[1];
+          break;
+        }
+      }
+      applyDifficultyToLink(problemNameLink);
+    });
+  } else if (/\/submissions/.test(pathname)) {
+    document.querySelectorAll("a[href*='/tasks/']").forEach(link => {
+      applyDifficultyToLink(link);
+    });
+  } else if (/\/tasks\/[^/]+/.test(pathname)) {
+    const taskId = extractTaskId(location.href);
+    const models = getProblemModels();
+    const difficulty = normalizeDifficulty(models?.[taskId]?.difficulty);
+    if (difficulty !== null) {
+      document.querySelectorAll("span.h2").forEach(title => {
+        title.style.setProperty("color", getDifficultyColor(difficulty), "important");
+        let circle = title.previousElementSibling;
+        if (!circle?.classList?.contains("apcb-difficulty-circle")) {
+          circle = document.createElement("span");
+          circle.className = "apcb-difficulty-circle";
+        }
+        circle.title = `Difficulty: ${difficulty}`;
+        circle.setAttribute("aria-label", `Difficulty: ${difficulty}`);
+        const color = getDifficultyColor(difficulty);
+        const fillRatio = Math.min(1, Math.max(0, (difficulty % 400) / 400));
+        circle.style.setProperty("display", "inline-block", "important");
+        circle.style.setProperty("width", "12px", "important");
+        circle.style.setProperty("height", "12px", "important");
+        circle.style.setProperty("border", `1px solid ${color}`, "important");
+        circle.style.setProperty("border-radius", "50%", "important");
+        circle.style.setProperty("margin-right", "4px", "important");
+        circle.style.setProperty("vertical-align", "middle", "important");
+        circle.style.setProperty("box-shadow", `0 0 2px ${color}`, "important");
+        circle.style.setProperty(
+          "background",
+          difficulty >= 3200
+            ? (difficulty >= 3600
+              ? "linear-gradient(to bottom, #fff4a3 0%, #ffd700 50%, #c8a800 100%)"
+              : "linear-gradient(to bottom, #ffffff 0%, #c0c0c0 50%, #808080 100%)")
+            : `linear-gradient(to top, ${color} ${fillRatio * 100}%, transparent ${fillRatio * 100}%)`,
+          "important"
+        );
+        if (circle !== title.previousElementSibling) {
+          title.insertAdjacentElement("beforebegin", circle);
+        }
+      });
+    }
   }
 }
 
@@ -438,11 +616,18 @@ function renderTaskListBadges() {
 
 function observeTaskLists() {
   renderTaskListBadges();
+  applyDifficultyDisplays();
   document.querySelectorAll("tbody").forEach(tbody => {
-    const observer = new MutationObserver(renderTaskListBadges);
+    const observer = new MutationObserver(() => {
+      renderTaskListBadges();
+      applyDifficultyDisplays();
+    });
     observer.observe(tbody, { childList: true, subtree: true });
   });
-  setInterval(renderTaskListBadges, 1000);
+  setInterval(() => {
+    renderTaskListBadges();
+    applyDifficultyDisplays();
+  }, 1000);
 }
 
 function main() {
@@ -451,6 +636,14 @@ function main() {
     waitForStatus();
   } else if (isLectureTaskListUrl(location.href)) {
     observeTaskLists();
+  } else if (
+    isLectureContestUrl(location.href) &&
+    /\/tasks\/[^/]+/.test(new URL(location.href).pathname)
+  ) {
+    applyDifficultyDisplays();
+    const observer = new MutationObserver(applyDifficultyDisplays);
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    setInterval(applyDifficultyDisplays, 1000);
   }
 
   const contestPath = new URL(location.href).pathname.match(/^\/contests\/([^/]+)/);
@@ -461,17 +654,26 @@ function main() {
 
 if (typeof window !== "undefined") {
   window.resolveOriginalTaskUrl = resolveOriginalTaskUrl;
+  window.normalizeDifficulty = normalizeDifficulty;
+  window.getDifficultyColor = getDifficultyColor;
+  window.extractTaskId = extractTaskId;
   window.CONFIG = CONFIG;
   const start = () => {
     if (typeof chrome !== "undefined" && chrome.storage?.local) {
       chrome.storage.local.get(
-        [CONFIG.SUBMITTED_TASKS_KEY, CONFIG.PENDING_TRANSFER_KEY],
+        [
+          CONFIG.SUBMITTED_TASKS_KEY,
+          CONFIG.PENDING_TRANSFER_KEY,
+          CONFIG.PROBLEM_MODELS_CACHE_KEY
+        ],
         values => {
           chromeStorageCache = {
             submitted_tasks:
               values[CONFIG.SUBMITTED_TASKS_KEY] || {},
             pending_transfer:
-              values[CONFIG.PENDING_TRANSFER_KEY] || null
+              values[CONFIG.PENDING_TRANSFER_KEY] || null,
+            problem_models_cache:
+              values[CONFIG.PROBLEM_MODELS_CACHE_KEY] || null
           };
           if (chrome.storage.onChanged) {
             chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -484,10 +686,29 @@ if (typeof window !== "undefined") {
                 chromeStorageCache.pending_transfer =
                   changes.pending_transfer.newValue || null;
               }
+              if (changes.problem_models_cache) {
+                chromeStorageCache.problem_models_cache =
+                  changes.problem_models_cache.newValue || null;
+              }
               renderTaskListBadges();
+              applyDifficultyDisplays();
             });
           }
           main();
+          if (!getProblemModels() && chrome.runtime?.sendMessage) {
+            chrome.runtime.sendMessage(
+              { type: "getProblemModels" },
+              response => {
+                if (response?.ok && response.models) {
+                  chromeStorageCache.problem_models_cache = {
+                    timestamp: Date.now(),
+                    models: response.models
+                  };
+                  applyDifficultyDisplays();
+                }
+              }
+            );
+          }
         }
       );
     } else if (document.readyState === "loading") {
