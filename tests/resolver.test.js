@@ -68,11 +68,41 @@ test("task-list badges use isolated row DOM APIs and tbody observation", () => {
   assert.match(source, /document\.createElement\("span"\)/);
   assert.match(source, /insertAdjacentElement\("afterend", badge\)/);
   assert.match(source, /dataset\.lectureSyncBadged/);
+  assert.match(source, /\[本家AC記録済\]/);
+  assert.match(source, /lecture-sync-ac-badge/);
   assert.match(source, /document\.querySelectorAll\("tbody tr"\)/);
   assert.match(source, /observer\.observe\(tbody,/);
   assert.match(source, /#28a745", "important"\)/);
   assert.match(source, /#ffffff", "important"\)/);
   assert.doesNotMatch(source, /td:nth-child/);
+});
+
+test("submission detection is limited to the user's submissions list", () => {
+  assert.match(source, /apcb-own-submission-detail/);
+  assert.match(source, /document\.referrer/);
+  assert.match(source, /location\.href = detailUrl/);
+});
+
+test("recognizes only own submission routes and submission lists", () => {
+  const scriptWindow = loadScript();
+  assert.equal(
+    scriptWindow.isSubmissionDetailUrl(
+      "https://atcoder.jp/contests/apcb_exercise_2026_18/submissions/me"
+    ),
+    true
+  );
+  assert.equal(
+    scriptWindow.isSubmissionDetailUrl(
+      "https://atcoder.jp/contests/apcb_exercise_2026_18/submissions/123456"
+    ),
+    false
+  );
+  assert.equal(
+    scriptWindow.isLectureTaskListUrl(
+      "https://atcoder.jp/contests/apcb_exercise_2026_18/submissions/me"
+    ),
+    true
+  );
 });
 
 test("Chrome MV3 manifest enables storage and AtCoder content scripts", () => {

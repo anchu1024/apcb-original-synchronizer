@@ -274,13 +274,27 @@ function isLectureContestUrl(url) {
 }
 
 function isSubmissionDetailUrl(url) {
-  return isLectureContestUrl(url) && /\/submissions\/[^/?#]+/.test(new URL(url, "https://atcoder.jp").pathname);
+  if (!isLectureContestUrl(url)) return false;
+  const pathname = new URL(url, "https://atcoder.jp").pathname;
+  if (/\/submissions\/me\/?$/.test(pathname)) return true;
+  if (!/\/submissions\/[^/?#]+\/?$/.test(pathname)) return false;
+
+  const referrer = typeof document !== "undefined" ? document.referrer : "";
+  if (/\/submissions\/me\/?$/.test(new URL(referrer || "https://atcoder.jp/", "https://atcoder.jp").pathname)) {
+    return true;
+  }
+
+  try {
+    return sessionStorage.getItem("apcb-own-submission-detail") === normalizeAtCoderUrl(url);
+  } catch (_) {
+    return false;
+  }
 }
 
 function isLectureTaskListUrl(url) {
   if (!isLectureContestUrl(url)) return false;
   const pathname = new URL(url, "https://atcoder.jp").pathname;
-  return /\/tasks\/?$/.test(pathname) || /\/submissions\/?$/.test(pathname);
+  return /\/tasks\/?$/.test(pathname) || /\/submissions\/(?:me\/?)?$/.test(pathname);
 }
 
 function createBadge(label, color) {
@@ -399,6 +413,31 @@ function showSubmissionDuplicate(targetUrl) {
 let submissionTransferStarted = false;
 function monitorSubmissionDetail() {
   if (submissionTransferStarted) return;
+
+  const ownListMatch = new URL(location.href, "https://atcoder.jp").pathname.match(
+    /^\/contests\/([^/]+)\/submissions\/me\/?$/
+  );
+  if (ownListMatch) {
+    const row = Array.from(document.querySelectorAll("tbody tr")).find(candidate => {
+      const status = Array.from(candidate.querySelectorAll("td, th"))
+        .find(element => /^AC$/i.test((element.textContent || "").trim()));
+      return !!status;
+    });
+    const detailLink = row?.querySelector("a[href*='/submissions/']");
+    if (detailLink) {
+      const detailUrl = normalizeAtCoderUrl(detailLink.href);
+      if (!/\/submissions\/[^/?#]+\/?$/.test(new URL(detailUrl).pathname) ||
+          /\/submissions\/me\/?$/.test(new URL(detailUrl).pathname)) {
+        return;
+      }
+      try {
+        sessionStorage.setItem("apcb-own-submission-detail", detailUrl);
+      } catch (_) {}
+      submissionTransferStarted = true;
+      location.href = detailUrl;
+    }
+    return;
+  }
 
   const status = findStatusElement();
   const text = (status?.textContent || "").trim();
@@ -694,7 +733,11 @@ function observeTaskLists() {
 
 function main() {
   if (typeof document === "undefined" || typeof location === "undefined") return;
-  if (isSubmissionDetailUrl(location.href)) {
+  const pathname = new URL(location.href).pathname;
+  if (/\/submissions\/me\/?$/.test(pathname)) {
+    observeTaskLists();
+    waitForStatus();
+  } else if (isSubmissionDetailUrl(location.href)) {
     waitForStatus();
   } else if (isLectureTaskListUrl(location.href)) {
     observeTaskLists();
@@ -721,6 +764,8 @@ if (typeof window !== "undefined") {
   window.extractTaskId = extractTaskId;
   window.extractSubmissionCode = extractSubmissionCode;
   window.extractLanguageName = extractLanguageName;
+  window.isSubmissionDetailUrl = isSubmissionDetailUrl;
+  window.isLectureTaskListUrl = isLectureTaskListUrl;
   window.CONFIG = CONFIG;
   const start = () => {
     if (typeof chrome !== "undefined" && chrome.storage?.local) {
