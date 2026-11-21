@@ -152,7 +152,9 @@ test("AC transfer waits for submission code and language extraction", () => {
   assert.match(source, /const waitUntil = Date\.now\(\) \+ 8000/);
   assert.match(source, /sourceCode\.trim\(\) && languageName/);
   assert.match(source, /lectureUrl: normalizeAtCoderUrl\(lectureUrl\)/);
-  assert.match(source, /pre#submission-code/);
+  assert.match(source, /querySelector\("pre#submission-code"\)/);
+  assert.match(source, /cloneNode\(true\)/);
+  assert.match(source, /\[\\u0590-\\u05FF\]/);
   assert.match(source, /normalizeLanguage\(option\.textContent\)/);
   assert.doesNotMatch(source, /"code"|"pre"/);
   assert.match(source, /textarea\[name='sourceCode'\]/);
