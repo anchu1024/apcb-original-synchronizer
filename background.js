@@ -1,4 +1,71 @@
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "setAtCoderSource" && typeof message.sourceCode === "string") {
+    if (!sender.tab?.id) {
+      sendResponse({ ok: false });
+      return true;
+    }
+    const sourceCode = message.sourceCode;
+    chrome.scripting.executeScript({
+      target: { tabId: sender.tab.id, allFrames: false },
+      world: "MAIN",
+      func: code => {
+        let changed = false;
+        const plainTextarea = document.querySelector(
+          "#plain-textarea, textarea[name='sourceCode'], textarea[name='source'], textarea#sourceCode"
+        );
+        if (plainTextarea) {
+          const prototype = Object.getPrototypeOf(plainTextarea);
+          const descriptor = prototype && Object.getOwnPropertyDescriptor(prototype, "value");
+          if (descriptor?.set) {
+            descriptor.set.call(plainTextarea, code);
+          } else if (plainTextarea.value !== code) {
+            plainTextarea.value = code;
+          }
+          ["input", "change", "keyup"].forEach(type => {
+            plainTextarea.dispatchEvent(new Event(type, { bubbles: true }));
+          });
+          changed = changed || plainTextarea.value === code;
+        }
+
+        if (typeof window.ace?.edit === "function") {
+          const editorElement = document.getElementById("editor");
+          if (editorElement) {
+            const editor = window.ace.edit(editorElement);
+            if (typeof editor?.setValue === "function") {
+              editor.setValue(code, -1);
+              changed = changed || editor.getValue?.() === code;
+            }
+          }
+        }
+
+        if (typeof window.jQuery === "function") {
+          window.jQuery(".editor").each((_index, element) => {
+            const editor = window.jQuery(element).data("editor");
+            if (typeof editor?.doc?.setValue === "function") {
+              editor.doc.setValue(code);
+              changed = true;
+            }
+          });
+        }
+
+        if (typeof window.CodeMirror?.setValue === "function") {
+          window.CodeMirror.setValue(code);
+          changed = true;
+        }
+        document.querySelectorAll(".CodeMirror").forEach(element => {
+          if (element.CodeMirror && typeof element.CodeMirror.setValue === "function") {
+            element.CodeMirror.setValue(code);
+            changed = true;
+          }
+        });
+        return changed;
+      },
+      args: [sourceCode]
+    }).then(results => {
+      sendResponse({ ok: results?.some(result => result.result === true) || false });
+    }).catch(() => sendResponse({ ok: false }));
+    return true;
+  }
   if (message?.type === "setWorkspaceCode" && typeof message.sourceCode === "string") {
     if (!sender.tab?.id) {
       sendResponse({ ok: false });
