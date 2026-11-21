@@ -142,6 +142,10 @@ test("Chrome extension uses storage and validated tab creation", () => {
   assert.match(background, /chrome\.scripting\.executeScript/);
   assert.match(background, /allFrames: true/);
   assert.match(background, /world: "MAIN"/);
+  assert.match(background, /setAtCoderSource/);
+  assert.match(background, /ace\.edit\(editorElement\)/);
+  assert.match(background, /plainTextarea/);
+  assert.match(background, /jQuery\(element\)/);
 });
 
 test("AC transfer waits for submission code and language extraction", () => {

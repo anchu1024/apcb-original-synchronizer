@@ -704,6 +704,21 @@ function setLegacySourceCode(sourceCode) {
 }
 
 function setSourceCode(sourceCode, languageName) {
+  const sendAtCoderSource = () => {
+    if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+      chrome.runtime.sendMessage({
+        type: "setAtCoderSource",
+        sourceCode
+      });
+    }
+  };
+  sendAtCoderSource();
+  const atCoderDeadline = Date.now() + 30000;
+  const atCoderRetry = setInterval(() => {
+    sendAtCoderSource();
+    if (Date.now() >= atCoderDeadline) clearInterval(atCoderRetry);
+  }, 250);
+
   if (hasAtCoderWorkspaceEditor()) {
     setWorkspaceStoredCode(sourceCode, languageName);
     const sendWorkspaceCode = () => {
