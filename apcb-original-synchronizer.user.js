@@ -368,7 +368,29 @@ function removeSubmittedTask(targetUrl) {
   setSubmittedTasks(submitted);
 }
 
-function extractSubmissionCode() {
+async function extractSubmissionCode() {
+  const codeElement = document.querySelector("pre#submission-code");
+  if (codeElement) {
+    const copyButton = codeElement.parentElement?.querySelector(".btn-copy")
+      || codeElement.closest(".part")?.querySelector(".btn-copy")
+      || document.querySelector(".btn-copy");
+    if (copyButton) {
+      copyButton.click();
+      await new Promise(resolve => setTimeout(resolve, 100));
+      try {
+        if (navigator.clipboard?.readText) {
+          const clipboardCode = (await navigator.clipboard.readText())
+            .replace(/\r\n?/g, "\n")
+            .replace(/^\uFEFF/, "");
+          if (clipboardCode.trim()
+            && !/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(clipboardCode)) {
+            return clipboardCode;
+          }
+        }
+      } catch (_) {}
+    }
+  }
+
   const element = document.querySelector("pre#submission-code");
   if (!element) return "";
 
@@ -380,10 +402,7 @@ function extractSubmissionCode() {
   const code = (clone.textContent || "").replace(/\r\n?/g, "\n");
   if (!code.trim()) return "";
   if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(code)) return "";
-  if (/X{20,}/.test(code) || /[\u0590-\u05FF]{20,}/.test(code)) return "";
-  return code
-    .replace(/^\uFEFF/, "")
-    .replace(/^\d{1,21}(?=\s*(?:#include|from|import|def|class|int|using|public|package))/, "");
+  return code.replace(/^\uFEFF/, "");
 }
 
 function extractLanguageName() {
@@ -487,9 +506,9 @@ function monitorSubmissionDetail() {
   }
 
   const waitUntil = Date.now() + 8000;
-  const prepareTransfer = () => {
+  const prepareTransfer = async () => {
     const languageName = extractLanguageName();
-    const sourceCode = extractSubmissionCode();
+    const sourceCode = await extractSubmissionCode();
     if (sourceCode.trim() && languageName) {
       gmSetValue(CONFIG.PENDING_TRANSFER_KEY, {
         targetUrl: normalizedTarget,

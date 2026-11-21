@@ -120,6 +120,7 @@ test("Chrome MV3 manifest enables storage and AtCoder content scripts", () => {
   assert.equal(manifest.manifest_version, 3);
   assert.ok(manifest.permissions.includes("storage"));
   assert.ok(manifest.permissions.includes("scripting"));
+  assert.ok(manifest.permissions.includes("clipboardRead"));
   assert.ok(manifest.host_permissions.includes("https://atcoder.jp/contests/*"));
   assert.equal(manifest.background.service_worker, "background.js");
   assert.equal(
@@ -154,7 +155,8 @@ test("AC transfer waits for submission code and language extraction", () => {
   assert.match(source, /lectureUrl: normalizeAtCoderUrl\(lectureUrl\)/);
   assert.match(source, /querySelector\("pre#submission-code"\)/);
   assert.match(source, /cloneNode\(true\)/);
-  assert.match(source, /\[\\u0590-\\u05FF\]/);
+  assert.match(source, /navigator\.clipboard\?\.readText/);
+  assert.match(source, /copyButton\.click\(\)/);
   assert.match(source, /normalizeLanguage\(option\.textContent\)/);
   assert.doesNotMatch(source, /"code"|"pre"/);
   assert.match(source, /textarea\[name='sourceCode'\]/);
