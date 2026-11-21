@@ -102,6 +102,14 @@ test("Chrome extension uses storage and validated tab creation", () => {
   assert.match(background, /url\.origin !== "https:\/\/atcoder\.jp"/);
 });
 
+test("AC transfer waits for submission code and language extraction", () => {
+  assert.match(source, /const waitUntil = Date\.now\(\) \+ 8000/);
+  assert.match(source, /sourceCode\.trim\(\) && languageName/);
+  assert.match(source, /lectureUrl: normalizeAtCoderUrl\(lectureUrl\)/);
+  assert.match(source, /pre#submission-code/);
+  assert.match(source, /normalizeLanguage\(option\.textContent\)/);
+});
+
 test("difficulty correction and official color palette", () => {
   const scriptWindow = loadScript();
   assert.equal(scriptWindow.normalizeDifficulty(-100), 311);

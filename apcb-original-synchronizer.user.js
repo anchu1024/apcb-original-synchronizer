@@ -300,21 +300,45 @@ function removeSubmittedTask(targetUrl) {
 }
 
 function extractSubmissionCode() {
-  const code = document.querySelector("#submission-code");
-  if (code) return code.textContent || "";
-  const pre = document.querySelector("pre#submission-code, pre.prettyprint, pre");
-  return pre ? pre.textContent || "" : "";
+  const candidates = [
+    "#submission-code",
+    "pre#submission-code",
+    "pre.prettyprint",
+    "textarea[name='sourceCode']",
+    "code",
+    "pre"
+  ];
+  for (const selector of candidates) {
+    const element = document.querySelector(selector);
+    if (!element) continue;
+    const code = typeof element.value === "string"
+      ? element.value
+      : (element.textContent || "");
+    if (code.trim()) return code;
+  }
+  return "";
 }
 
 function extractLanguageName() {
-  const languageHeading = Array.from(document.querySelectorAll("th")).find(
-    heading => /^言語|language/i.test((heading.textContent || "").trim())
-  );
-  if (languageHeading) {
-    const row = languageHeading.closest("tr");
-    const index = Array.from(row?.children || []).indexOf(languageHeading);
-    const cell = row?.children[index + 1];
-    if (cell && cell !== languageHeading) return (cell.textContent || "").trim();
+  const labels = Array.from(document.querySelectorAll("th, dt"));
+  for (const heading of labels) {
+    const label = (heading.textContent || "").trim();
+    if (!/^言語|language/i.test(label)) continue;
+    const row = heading.closest("tr");
+    if (row) {
+      const index = Array.from(row.children).indexOf(heading);
+      const cell = row.children[index + 1];
+      if (cell) {
+        const text = (cell.textContent || "").trim();
+        if (text) return text;
+      }
+    }
+    const list = heading.closest("dl");
+    if (list) {
+      const sibling = heading.nextElementSibling;
+      const text = (sibling?.textContent || "").trim();
+      if (text) return text;
+    }
   }
   const candidates = [
     "#submission-language",
@@ -394,18 +418,35 @@ function monitorSubmissionDetail() {
     return;
   }
 
-  gmSetValue(CONFIG.PENDING_TRANSFER_KEY, {
-    targetUrl: normalizedTarget,
-    languageName: extractLanguageName(),
-    sourceCode: extractSubmissionCode(),
-    createdAt: Date.now()
-  });
+  const waitUntil = Date.now() + 8000;
+  const prepareTransfer = () => {
+    const languageName = extractLanguageName();
+    const sourceCode = extractSubmissionCode();
+    if (sourceCode.trim() && languageName) {
+      gmSetValue(CONFIG.PENDING_TRANSFER_KEY, {
+        targetUrl: normalizedTarget,
+        lectureUrl: normalizeAtCoderUrl(lectureUrl),
+        languageName,
+        sourceCode,
+        createdAt: Date.now()
+      });
 
-  if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
-    chrome.runtime.sendMessage({ type: "openInTab", url: normalizedTarget });
-  } else {
-    window.open(normalizedTarget, "_blank");
-  }
+      if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+        chrome.runtime.sendMessage({ type: "openInTab", url: normalizedTarget });
+      } else {
+        window.open(normalizedTarget, "_blank");
+      }
+      return;
+    }
+
+    if (Date.now() < waitUntil) {
+      setTimeout(prepareTransfer, 100);
+      return;
+    }
+
+    submissionTransferStarted = false;
+  };
+  prepareTransfer();
 }
 
 function waitForStatus() {
@@ -443,10 +484,14 @@ function selectLanguage(languageName) {
   if (!select) return;
 
   const options = Array.from(select.options);
-  const exact = options.find(option => (option.textContent || "").trim() === languageName);
+  const normalizeLanguage = name => (name || "").trim().replace(/\s+/g, " ").toLowerCase();
+  const wanted = normalizeLanguage(languageName);
+  const exact = options.find(
+    option => normalizeLanguage(option.textContent) === wanted
+  );
   const prefix = options.find(option => {
-    const name = (option.textContent || "").trim();
-    return name.startsWith(languageName) || languageName.startsWith(name);
+    const name = normalizeLanguage(option.textContent);
+    return name.startsWith(wanted) || wanted.startsWith(name);
   });
   const selected = exact || prefix;
   if (!selected) return;
@@ -657,6 +702,8 @@ if (typeof window !== "undefined") {
   window.normalizeDifficulty = normalizeDifficulty;
   window.getDifficultyColor = getDifficultyColor;
   window.extractTaskId = extractTaskId;
+  window.extractSubmissionCode = extractSubmissionCode;
+  window.extractLanguageName = extractLanguageName;
   window.CONFIG = CONFIG;
   const start = () => {
     if (typeof chrome !== "undefined" && chrome.storage?.local) {
