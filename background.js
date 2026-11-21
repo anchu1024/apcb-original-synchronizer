@@ -1,4 +1,45 @@
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "setWorkspaceCode" && typeof message.sourceCode === "string") {
+    if (!sender.tab?.id) {
+      sendResponse({ ok: false });
+      return true;
+    }
+    const sourceCode = message.sourceCode;
+    chrome.scripting.executeScript({
+      target: { tabId: sender.tab.id, allFrames: true },
+      world: "MAIN",
+      func: code => {
+        const applyToMonaco = () => {
+          if (typeof window.monaco?.editor?.getModels === "function") {
+            window.monaco.editor.getModels().forEach(model => {
+              if (typeof model?.setValue === "function" && model.getValue?.() !== code) {
+                model.setValue(code);
+              }
+            });
+            if (typeof window.monaco.editor?.getEditors === "function") {
+              window.monaco.editor.getEditors().forEach(editor => {
+                if (typeof editor?.setValue === "function" && editor.getValue?.() !== code) {
+                  editor.setValue(code);
+                }
+              });
+            }
+          }
+          document.querySelectorAll("textarea").forEach(textarea => {
+            if (textarea.value !== code) textarea.value = code;
+            textarea.dispatchEvent(new Event("input", { bubbles: true }));
+          });
+        };
+        applyToMonaco();
+        return typeof window.monaco?.editor === "object";
+      },
+      args: [sourceCode]
+    }).then(results => {
+      sendResponse({
+        ok: results?.some(result => result.result === true) || false
+      });
+    }).catch(() => sendResponse({ ok: false }));
+    return true;
+  }
   if (message?.type === "getProblemModels") {
     getProblemModels()
       .then(models => sendResponse({ ok: true, models }))
