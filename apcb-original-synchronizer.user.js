@@ -371,11 +371,7 @@ function removeSubmittedTask(targetUrl) {
 function extractSubmissionCode() {
   const candidates = [
     "#submission-code",
-    "pre#submission-code",
-    "pre.prettyprint",
-    "textarea[name='sourceCode']",
-    "code",
-    "pre"
+    "pre#submission-code"
   ];
   for (const selector of candidates) {
     const element = document.querySelector(selector);
@@ -680,27 +676,8 @@ function setLegacySourceCode(sourceCode) {
   };
 
   setEditorValue();
-  const deadline = Date.now() + 30000;
-  const retry = setInterval(() => {
-    setEditorValue();
-    const target = document.querySelector(
-      "textarea[name='sourceCode'], textarea[name='source'], textarea#sourceCode, textarea#plain-textarea"
-    );
-    const mirror = document.querySelector(".CodeMirror")?.CodeMirror;
-    const mirrorMatches = typeof mirror?.getValue === "function"
-      && mirror.getValue() === sourceCode;
-    const aceMatches = typeof window.ace?.edit === "function"
-      && Array.from(document.querySelectorAll(".ace_editor")).some(element =>
-        window.ace.edit(element).getValue?.() === sourceCode);
-    if (target?.value === sourceCode || mirrorMatches || aceMatches) {
-      clearInterval(retry);
-    } else if (Date.now() >= deadline) {
-      clearInterval(retry);
-    }
-  }, 100);
   setTimeout(setEditorValue, 500);
-  setTimeout(setEditorValue, 1500);
-  setTimeout(setEditorValue, 5000);
+  setTimeout(setEditorValue, 2000);
 }
 
 function setSourceCode(sourceCode, languageName) {
@@ -713,11 +690,8 @@ function setSourceCode(sourceCode, languageName) {
     }
   };
   sendAtCoderSource();
-  const atCoderDeadline = Date.now() + 30000;
-  const atCoderRetry = setInterval(() => {
-    sendAtCoderSource();
-    if (Date.now() >= atCoderDeadline) clearInterval(atCoderRetry);
-  }, 250);
+  setTimeout(sendAtCoderSource, 500);
+  setTimeout(sendAtCoderSource, 2000);
 
   if (hasAtCoderWorkspaceEditor()) {
     setWorkspaceStoredCode(sourceCode, languageName);
@@ -730,11 +704,8 @@ function setSourceCode(sourceCode, languageName) {
       }
     };
     sendWorkspaceCode();
-    const workspaceDeadline = Date.now() + 30000;
-    const workspaceRetry = setInterval(() => {
-      sendWorkspaceCode();
-      if (Date.now() >= workspaceDeadline) clearInterval(workspaceRetry);
-    }, 250);
+    setTimeout(sendWorkspaceCode, 500);
+    setTimeout(sendWorkspaceCode, 2000);
   }
   setLegacySourceCode(sourceCode);
 }
