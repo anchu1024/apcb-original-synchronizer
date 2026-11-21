@@ -369,6 +369,34 @@ function removeSubmittedTask(targetUrl) {
 }
 
 async function extractSubmissionCode() {
+  const analyzeSourcePayload = (source, origin) => {
+    let hash = 2166136261;
+    for (let i = 0; i < source.length; i++) {
+      hash ^= source.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    const control = source.match(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g)?.length || 0;
+    const hebrew = source.match(/[\u0590-\u05FF]/g)?.length || 0;
+    const xCount = (source.match(/X/g)?.length || 0);
+    const snapshot = {
+      origin,
+      length: source.length,
+      fnvHash32: (hash >>> 0).toString(16).padStart(8, "0"),
+      newlineCount: (source.match(/\n/g)?.length || 0),
+      controlCharCount: control,
+      hebrewCharCount: hebrew,
+      xCharCount: xCount,
+      prefix: source.slice(0, 120),
+      suffix: source.slice(-120),
+      sourceCode: source
+    };
+    console.groupCollapsed("[APCB] source extracted from lecture page");
+    console.log(snapshot);
+    console.log("[APCB] exact source payload:", source);
+    console.groupEnd();
+    return snapshot;
+  };
+
   const codeElement = document.querySelector("pre#submission-code");
   if (codeElement) {
     const copyButton = codeElement.parentElement?.querySelector(".btn-copy")
@@ -384,6 +412,7 @@ async function extractSubmissionCode() {
             .replace(/^\uFEFF/, "");
           if (clipboardCode.trim()
             && !/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(clipboardCode)) {
+            analyzeSourcePayload(clipboardCode, "clipboard/.btn-copy");
             return clipboardCode;
           }
         }
@@ -402,7 +431,9 @@ async function extractSubmissionCode() {
   const code = (clone.textContent || "").replace(/\r\n?/g, "\n");
   if (!code.trim()) return "";
   if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(code)) return "";
-  return code.replace(/^\uFEFF/, "");
+  const normalizedCode = code.replace(/^\uFEFF/, "");
+  analyzeSourcePayload(normalizedCode, "fallback/pre#submission-code clone");
+  return normalizedCode;
 }
 
 function extractLanguageName() {
@@ -510,6 +541,23 @@ function monitorSubmissionDetail() {
     const languageName = extractLanguageName();
     const sourceCode = await extractSubmissionCode();
     if (sourceCode.trim() && languageName) {
+      console.group("[APCB] pending transfer payload");
+      console.log({
+        length: sourceCode.length,
+        fnvHash32: (() => {
+          let hash = 2166136261;
+          for (let i = 0; i < sourceCode.length; i++) {
+            hash ^= sourceCode.charCodeAt(i);
+            hash = Math.imul(hash, 16777619);
+          }
+          return (hash >>> 0).toString(16).padStart(8, "0");
+        })(),
+        prefix: sourceCode.slice(0, 120),
+        suffix: sourceCode.slice(-120),
+        sourceCode
+      });
+      console.log("[APCB] exact pending source payload:", sourceCode);
+      console.groupEnd();
       gmSetValue(CONFIG.PENDING_TRANSFER_KEY, {
         targetUrl: normalizedTarget,
         lectureUrl: normalizeAtCoderUrl(lectureUrl),
@@ -702,11 +750,36 @@ function setLegacySourceCode(sourceCode) {
 }
 
 function setSourceCode(sourceCode, languageName) {
+  const logSourcePayload = (phase) => {
+    let hash = 2166136261;
+    for (let i = 0; i < sourceCode.length; i++) {
+      hash ^= sourceCode.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    console.group(`[APCB] original page payload: ${phase}`);
+    console.log({
+      length: sourceCode.length,
+      fnvHash32: (hash >>> 0).toString(16).padStart(8, "0"),
+      newlineCount: (sourceCode.match(/\n/g)?.length || 0),
+      controlCharCount: (sourceCode.match(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g)?.length || 0),
+      hebrewCharCount: (sourceCode.match(/[\u0590-\u05FF]/g)?.length || 0),
+      xCharCount: (sourceCode.match(/X/g)?.length || 0),
+      prefix: sourceCode.slice(0, 120),
+      suffix: sourceCode.slice(-120),
+      sourceCode
+    });
+    console.log("[APCB] exact original-page payload:", sourceCode);
+    console.groupEnd();
+  };
+  logSourcePayload("before insertion");
   const sendAtCoderSource = () => {
     if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
       chrome.runtime.sendMessage({
         type: "setAtCoderSource",
         sourceCode
+      }, response => {
+        console.log("[APCB] original page insertion response:", response);
+        logSourcePayload("after insertion request");
       });
     }
   };

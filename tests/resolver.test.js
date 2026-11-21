@@ -147,6 +147,9 @@ test("Chrome extension uses storage and validated tab creation", () => {
   assert.match(background, /ace\.edit\(editorElement\)/);
   assert.match(background, /plainTextarea/);
   assert.match(background, /jQuery\(element\)/);
+  assert.match(background, /\[APCB\] MAIN world insertion/);
+  assert.match(background, /exact actual Ace/);
+  assert.match(background, /exact actual Workspace Monaco model/);
 });
 
 test("AC transfer waits for submission code and language extraction", () => {
@@ -157,6 +160,10 @@ test("AC transfer waits for submission code and language extraction", () => {
   assert.match(source, /cloneNode\(true\)/);
   assert.match(source, /navigator\.clipboard\?\.readText/);
   assert.match(source, /copyButton\.click\(\)/);
+  assert.match(source, /\[APCB\] source extracted from lecture page/);
+  assert.match(source, /\[APCB\] pending transfer payload/);
+  assert.match(source, /\[APCB\] original page payload/);
+  assert.match(source, /exact source payload/);
   assert.match(source, /normalizeLanguage\(option\.textContent\)/);
   assert.doesNotMatch(source, /"code"|"pre"/);
   assert.match(source, /textarea\[name='sourceCode'\]/);

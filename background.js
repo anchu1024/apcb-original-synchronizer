@@ -9,6 +9,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       target: { tabId: sender.tab.id, allFrames: false },
       world: "MAIN",
       func: code => {
+        const analyze = source => ({
+          length: source?.length || 0,
+          prefix: source?.slice(0, 120) || "",
+          suffix: source?.slice(-120) || "",
+          newlineCount: (source?.match(/\n/g)?.length || 0),
+          controlCharCount: (source?.match(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g)?.length || 0),
+          hebrewCharCount: (source?.match(/[\u0590-\u05FF]/g)?.length || 0),
+          xCharCount: (source?.match(/X/g)?.length || 0),
+          sourceCode: source || ""
+        });
+        console.group("[APCB] MAIN world insertion");
+        console.log("[APCoder] source before insertion:", analyze(code));
         let changed = false;
         const plainTextarea = document.querySelector(
           "#plain-textarea, textarea[name='sourceCode'], textarea[name='source'], textarea#sourceCode"
@@ -58,6 +70,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             changed = true;
           }
         });
+        const actual = {
+          plainTextarea: plainTextarea?.value || null,
+          aceEditor: (() => {
+            if (typeof window.ace?.edit !== "function") return null;
+            const editorElement = document.getElementById("editor");
+            if (!editorElement) return null;
+            return window.ace.edit(editorElement).getValue?.() || null;
+          })(),
+          codeMirror: document.querySelector(".CodeMirror")?.CodeMirror?.getValue?.() || null
+        };
+        console.log("[APCB] source after insertion:", {
+          requested: analyze(code),
+          actual
+        });
+        console.log("[APCB] exact requested source:", code);
+        console.log("[APCB] exact actual plaintext:", actual.plainTextarea);
+        console.log("[APCB] exact actual Ace:", actual.aceEditor);
+        console.log("[APCB] exact actual CodeMirror:", actual.codeMirror);
+        console.groupEnd();
         return changed;
       },
       args: [sourceCode]
@@ -76,6 +107,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       target: { tabId: sender.tab.id, allFrames: true },
       world: "MAIN",
       func: code => {
+        console.group("[APCB] Workspace MAIN world insertion");
+        console.log("[APCB] requested Workspace source:", {
+          length: code.length,
+          prefix: code.slice(0, 120),
+          suffix: code.slice(-120),
+          sourceCode: code
+        });
         const applyToMonaco = () => {
           if (typeof window.monaco?.editor?.getModels === "function") {
             window.monaco.editor.getModels().forEach(model => {
@@ -97,6 +135,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           });
         };
         applyToMonaco();
+        const monacoValues = typeof window.monaco?.editor?.getModels === "function"
+          ? window.monaco.editor.getModels().map(model => model.getValue?.() || "")
+          : [];
+        console.log("[APCB] actual Workspace Monaco values:", monacoValues);
+        console.log("[APCB] exact requested Workspace source:", code);
+        monacoValues.forEach((value, index) => {
+          console.log(`[APCB] exact actual Workspace Monaco model ${index}:`, value);
+        });
+        console.groupEnd();
         return typeof window.monaco?.editor === "object";
       },
       args: [sourceCode]
