@@ -1,0 +1,2 @@
+# apcb-original-synchronizer
+APCBで講義でACしたときに自動で本家側もACできるようにしてAC Problemsで講義での状況を見ることができるようにするためのchrome拡張機能
