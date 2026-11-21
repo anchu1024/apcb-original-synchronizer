@@ -78,28 +78,35 @@ test("task-list badges use isolated row DOM APIs and tbody observation", () => {
 });
 
 test("submission detection is limited to the user's submissions list", () => {
-  assert.match(source, /apcb-own-submission-detail/);
-  assert.match(source, /document\.referrer/);
-  assert.match(source, /location\.href = detailUrl/);
+  assert.match(source, /extractLoggedInUsername/);
+  assert.match(source, /extractSubmissionUsername/);
+  assert.match(source, /isOwnSubmissionDetail/);
+  assert.match(source, /observeSubmissionListColors/);
 });
 
-test("recognizes only own submission routes and submission lists", () => {
+test("recognizes submission detail and list routes generically", () => {
   const scriptWindow = loadScript();
   assert.equal(
     scriptWindow.isSubmissionDetailUrl(
       "https://atcoder.jp/contests/apcb_exercise_2026_18/submissions/me"
     ),
-    true
+    false
   );
   assert.equal(
     scriptWindow.isSubmissionDetailUrl(
       "https://atcoder.jp/contests/apcb_exercise_2026_18/submissions/123456"
     ),
-    false
+    true
   );
   assert.equal(
     scriptWindow.isLectureTaskListUrl(
       "https://atcoder.jp/contests/apcb_exercise_2026_18/submissions/me"
+    ),
+    true
+  );
+  assert.equal(
+    scriptWindow.isLectureSubmissionListUrl(
+      "https://atcoder.jp/contests/apcb_exercise_2026_18/submissions"
     ),
     true
   );
@@ -139,8 +146,11 @@ test("AC transfer waits for submission code and language extraction", () => {
   assert.match(source, /pre#submission-code/);
   assert.match(source, /normalizeLanguage\(option\.textContent\)/);
   assert.match(source, /textarea\[name='sourceCode'\]/);
+  assert.match(source, /textarea#plain-textarea/);
   assert.match(source, /\["input", "change", "keyup"\]/);
-  assert.match(source, /10000/);
+  assert.match(source, /30000/);
+  assert.match(source, /\.CodeMirror/);
+  assert.match(source, /window\.ace/);
 });
 
 test("difficulty correction and official color palette", () => {

@@ -276,25 +276,80 @@ function isLectureContestUrl(url) {
 function isSubmissionDetailUrl(url) {
   if (!isLectureContestUrl(url)) return false;
   const pathname = new URL(url, "https://atcoder.jp").pathname;
-  if (/\/submissions\/me\/?$/.test(pathname)) return true;
-  if (!/\/submissions\/[^/?#]+\/?$/.test(pathname)) return false;
-
-  const referrer = typeof document !== "undefined" ? document.referrer : "";
-  if (/\/submissions\/me\/?$/.test(new URL(referrer || "https://atcoder.jp/", "https://atcoder.jp").pathname)) {
-    return true;
-  }
-
-  try {
-    return sessionStorage.getItem("apcb-own-submission-detail") === normalizeAtCoderUrl(url);
-  } catch (_) {
-    return false;
-  }
+  return /^\/contests\/[^/]+\/submissions\/[^/?#]+\/?$/.test(pathname)
+    && !/\/submissions\/me\/?$/.test(pathname);
 }
 
 function isLectureTaskListUrl(url) {
   if (!isLectureContestUrl(url)) return false;
   const pathname = new URL(url, "https://atcoder.jp").pathname;
-  return /\/tasks\/?$/.test(pathname) || /\/submissions\/(?:me\/?)?$/.test(pathname);
+  return /\/tasks\/?$/.test(pathname) || /\/submissions\/me\/?$/.test(pathname);
+}
+
+function isLectureSubmissionListUrl(url) {
+  if (!isLectureContestUrl(url)) return false;
+  const pathname = new URL(url, "https://atcoder.jp").pathname;
+  return /^\/contests\/[^/]+\/submissions\/?$/.test(pathname);
+}
+
+function extractLoggedInUsername() {
+  const candidates = [
+    ".navbar-right a[href*='/users/']",
+    ".navbar-nav a[href*='/users/']",
+    "#navbar-collapse a[href*='/users/']",
+    ".navbar a[href*='/users/']",
+    "header a[href*='/users/']",
+    "a.dropdown-toggle[href*='/users/']"
+  ];
+  for (const selector of candidates) {
+    const link = document.querySelector(selector);
+    const match = link?.getAttribute("href")?.match(/^\/users\/([^/?#]+)\/?$/);
+    if (match) return decodeURIComponent(match[1]).trim();
+  }
+
+  const meta = document.querySelector("meta[name='current-user'], meta[name='username']");
+  const metaName = meta?.getAttribute("content")?.trim();
+  if (metaName) return metaName;
+  return "";
+}
+
+function extractSubmissionUsername() {
+  const labeledElements = Array.from(document.querySelectorAll("th, dt"));
+  for (const heading of labeledElements) {
+    const label = (heading.textContent || "").trim().replace(/[:：]\s*$/, "");
+    if (!/^(提出者|ユーザ|ユーザー|User|Username)$/i.test(label)) continue;
+    const row = heading.closest("tr");
+    if (row) {
+      const index = Array.from(row.children).indexOf(heading);
+      const cell = row.children[index + 1];
+      const link = cell?.querySelector("a[href*='/users/']");
+      const match = link?.getAttribute("href")?.match(/^\/users\/([^/?#]+)\/?$/);
+      if (match) return decodeURIComponent(match[1]).trim();
+      const text = cell?.textContent?.trim();
+      if (text) return text;
+    }
+    const list = heading.closest("dl");
+    const sibling = heading.nextElementSibling;
+    const link = sibling?.querySelector("a[href*='/users/']");
+    const match = link?.getAttribute("href")?.match(/^\/users\/([^/?#]+)\/?$/);
+    if (match) return decodeURIComponent(match[1]).trim();
+    const text = sibling?.textContent?.trim();
+    if (text) return text;
+  }
+
+  const links = Array.from(document.querySelectorAll("table a[href*='/users/']"));
+  for (const link of links) {
+    const match = link.getAttribute("href")?.match(/^\/users\/([^/?#]+)\/?$/);
+    if (match) return decodeURIComponent(match[1]).trim();
+  }
+  return "";
+}
+
+function isOwnSubmissionDetail() {
+  const loggedIn = extractLoggedInUsername();
+  const submitter = extractSubmissionUsername();
+  if (!loggedIn || !submitter) return false;
+  return loggedIn.toLowerCase() === submitter.toLowerCase();
 }
 
 function createBadge(label, color) {
@@ -413,31 +468,7 @@ function showSubmissionDuplicate(targetUrl) {
 let submissionTransferStarted = false;
 function monitorSubmissionDetail() {
   if (submissionTransferStarted) return;
-
-  const ownListMatch = new URL(location.href, "https://atcoder.jp").pathname.match(
-    /^\/contests\/([^/]+)\/submissions\/me\/?$/
-  );
-  if (ownListMatch) {
-    const row = Array.from(document.querySelectorAll("tbody tr")).find(candidate => {
-      const status = Array.from(candidate.querySelectorAll("td, th"))
-        .find(element => /^AC$/i.test((element.textContent || "").trim()));
-      return !!status;
-    });
-    const detailLink = row?.querySelector("a[href*='/submissions/']");
-    if (detailLink) {
-      const detailUrl = normalizeAtCoderUrl(detailLink.href);
-      if (!/\/submissions\/[^/?#]+\/?$/.test(new URL(detailUrl).pathname) ||
-          /\/submissions\/me\/?$/.test(new URL(detailUrl).pathname)) {
-        return;
-      }
-      try {
-        sessionStorage.setItem("apcb-own-submission-detail", detailUrl);
-      } catch (_) {}
-      submissionTransferStarted = true;
-      location.href = detailUrl;
-    }
-    return;
-  }
+  if (!isOwnSubmissionDetail()) return;
 
   const status = findStatusElement();
   const text = (status?.textContent || "").trim();
@@ -540,52 +571,95 @@ function selectLanguage(languageName) {
 }
 
 function setSourceCode(sourceCode) {
-  const setCodeMirrorValue = () => {
+  const setEditorValue = () => {
     const textareas = Array.from(document.querySelectorAll(
-      "textarea[name='sourceCode'], textarea[name='source'], textarea.CodeMirror-code, .CodeMirror textarea"
+      "textarea[name='sourceCode'], textarea[name='source'], textarea#sourceCode, " +
+      "textarea#plain-textarea, textarea.CodeMirror-code, .CodeMirror textarea"
     ));
+    let changed = false;
+
     textareas.forEach(textarea => {
       const prototype = Object.getPrototypeOf(textarea);
       const descriptor = prototype && Object.getOwnPropertyDescriptor(prototype, "value");
       if (descriptor?.set) {
         descriptor.set.call(textarea, sourceCode);
-      } else {
+      } else if (textarea.value !== sourceCode) {
         textarea.value = sourceCode;
       }
       ["input", "change", "keyup"].forEach(type => {
         textarea.dispatchEvent(new Event(type, { bubbles: true }));
       });
-      if (textarea?.CodeMirror && typeof textarea.CodeMirror.setValue === "function") {
-        textarea.CodeMirror.setValue(sourceCode);
-      }
-      if (typeof textarea?.value === "string" && textarea.value !== sourceCode) {
-        textarea.value = sourceCode;
-        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      changed = changed || textarea.value === sourceCode;
+
+      const linkedEditor = textarea.CodeMirror
+        || textarea.nextElementSibling?.CodeMirror
+        || textarea.closest(".CodeMirror")?.CodeMirror;
+      if (linkedEditor && typeof linkedEditor.setValue === "function") {
+        linkedEditor.setValue(sourceCode);
+        changed = true;
       }
     });
-    if (typeof window.CodeMirror?.setValue === "function") {
-      window.CodeMirror.setValue(sourceCode);
-    }
-    if (Array.isArray(window.CodeMirror?.editors)) {
-      window.CodeMirror.editors.forEach(editor => {
-        if (typeof editor?.setValue === "function") editor.setValue(sourceCode);
-      });
-    }
+
     document.querySelectorAll(".CodeMirror").forEach(element => {
       if (element.CodeMirror && typeof element.CodeMirror.setValue === "function") {
         element.CodeMirror.setValue(sourceCode);
+        changed = true;
       }
     });
+
+    if (typeof window.CodeMirror?.setValue === "function") {
+      window.CodeMirror.setValue(sourceCode);
+      changed = true;
+    }
+    if (Array.isArray(window.CodeMirror?.editors)) {
+      window.CodeMirror.editors.forEach(editor => {
+        if (typeof editor?.setValue === "function") {
+          editor.setValue(sourceCode);
+          changed = true;
+        }
+      });
+    }
+    [window.editor, window.CodeMirrorEditor, window.sourceEditor].forEach(editor => {
+      if (typeof editor?.setValue === "function") {
+        editor.setValue(sourceCode);
+        changed = true;
+      }
+    });
+
+    if (typeof window.ace?.edit === "function") {
+      document.querySelectorAll(".ace_editor").forEach(element => {
+        const editor = window.ace.edit(element);
+        if (typeof editor?.setValue === "function") {
+          editor.setValue(sourceCode, -1);
+          changed = true;
+        }
+      });
+    }
+    return changed;
   };
 
-  setCodeMirrorValue();
-  waitForElement(
-    "textarea[name='sourceCode'], textarea[name='source'], .CodeMirror textarea",
-    10000,
-    () => setCodeMirrorValue()
-  );
-  setTimeout(setCodeMirrorValue, 500);
-  setTimeout(setCodeMirrorValue, 1500);
+  setEditorValue();
+  const deadline = Date.now() + 30000;
+  const retry = setInterval(() => {
+    setEditorValue();
+    const target = document.querySelector(
+      "textarea[name='sourceCode'], textarea[name='source'], textarea#sourceCode, textarea#plain-textarea"
+    );
+    const mirror = document.querySelector(".CodeMirror")?.CodeMirror;
+    const mirrorMatches = typeof mirror?.getValue === "function"
+      && mirror.getValue() === sourceCode;
+    const aceMatches = typeof window.ace?.edit === "function"
+      && Array.from(document.querySelectorAll(".ace_editor")).some(element =>
+        window.ace.edit(element).getValue?.() === sourceCode);
+    if (target?.value === sourceCode || mirrorMatches || aceMatches) {
+      clearInterval(retry);
+    } else if (Date.now() >= deadline) {
+      clearInterval(retry);
+    }
+  }, 100);
+  setTimeout(setEditorValue, 500);
+  setTimeout(setEditorValue, 1500);
+  setTimeout(setEditorValue, 5000);
 }
 
 function showTransferBanner() {
@@ -731,12 +805,24 @@ function observeTaskLists() {
   }, 1000);
 }
 
+function observeSubmissionListColors() {
+  applyDifficultyDisplays();
+  document.querySelectorAll("tbody").forEach(tbody => {
+    const observer = new MutationObserver(() => {
+      applyDifficultyDisplays();
+    });
+    observer.observe(tbody, { childList: true, subtree: true });
+  });
+  setInterval(applyDifficultyDisplays, 1000);
+}
+
 function main() {
   if (typeof document === "undefined" || typeof location === "undefined") return;
   const pathname = new URL(location.href).pathname;
   if (/\/submissions\/me\/?$/.test(pathname)) {
     observeTaskLists();
-    waitForStatus();
+  } else if (isLectureSubmissionListUrl(location.href)) {
+    observeSubmissionListColors();
   } else if (isSubmissionDetailUrl(location.href)) {
     waitForStatus();
   } else if (isLectureTaskListUrl(location.href)) {
@@ -766,6 +852,10 @@ if (typeof window !== "undefined") {
   window.extractLanguageName = extractLanguageName;
   window.isSubmissionDetailUrl = isSubmissionDetailUrl;
   window.isLectureTaskListUrl = isLectureTaskListUrl;
+  window.isLectureSubmissionListUrl = isLectureSubmissionListUrl;
+  window.extractLoggedInUsername = extractLoggedInUsername;
+  window.extractSubmissionUsername = extractSubmissionUsername;
+  window.isOwnSubmissionDetail = isOwnSubmissionDetail;
   window.CONFIG = CONFIG;
   const start = () => {
     if (typeof chrome !== "undefined" && chrome.storage?.local) {
