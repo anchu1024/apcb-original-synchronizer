@@ -119,6 +119,7 @@ test("Chrome MV3 manifest enables storage and AtCoder content scripts", () => {
   ));
   assert.equal(manifest.manifest_version, 3);
   assert.ok(manifest.permissions.includes("storage"));
+  assert.ok(manifest.permissions.includes("scripting"));
   assert.ok(manifest.host_permissions.includes("https://atcoder.jp/contests/*"));
   assert.equal(manifest.background.service_worker, "background.js");
   assert.equal(
@@ -137,6 +138,10 @@ test("Chrome extension uses storage and validated tab creation", () => {
   );
   assert.match(background, /chrome\.tabs\.create/);
   assert.match(background, /url\.origin !== "https:\/\/atcoder\.jp"/);
+  assert.match(background, /setWorkspaceCode/);
+  assert.match(background, /chrome\.scripting\.executeScript/);
+  assert.match(background, /allFrames: true/);
+  assert.match(background, /world: "MAIN"/);
 });
 
 test("AC transfer waits for submission code and language extraction", () => {

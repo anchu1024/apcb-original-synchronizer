@@ -706,6 +706,20 @@ function setLegacySourceCode(sourceCode) {
 function setSourceCode(sourceCode, languageName) {
   if (hasAtCoderWorkspaceEditor()) {
     setWorkspaceStoredCode(sourceCode, languageName);
+    const sendWorkspaceCode = () => {
+      if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+        chrome.runtime.sendMessage({
+          type: "setWorkspaceCode",
+          sourceCode
+        });
+      }
+    };
+    sendWorkspaceCode();
+    const workspaceDeadline = Date.now() + 30000;
+    const workspaceRetry = setInterval(() => {
+      sendWorkspaceCode();
+      if (Date.now() >= workspaceDeadline) clearInterval(workspaceRetry);
+    }, 250);
   }
   setLegacySourceCode(sourceCode);
 }

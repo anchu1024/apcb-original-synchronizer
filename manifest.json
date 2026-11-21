@@ -4,7 +4,8 @@
   "version": "1.0.0",
   "description": "講義用AtCoderコンテストのAC提出を本家問題へ手動提出用に転記します。",
   "permissions": [
-    "storage"
+    "storage",
+    "scripting"
   ],
   "host_permissions": [
     "https://atcoder.jp/contests/*",
