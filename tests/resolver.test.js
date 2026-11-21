@@ -151,6 +151,9 @@ test("AC transfer waits for submission code and language extraction", () => {
   assert.match(source, /30000/);
   assert.match(source, /\.CodeMirror/);
   assert.match(source, /window\.ace/);
+  assert.match(source, /code:\$\{contestId\}:\$\{problemId\}:\$\{languageId\}/);
+  assert.match(source, /backup_code:\$\{contestId\}:\$\{problemId\}:\$\{languageId\}/);
+  assert.match(source, /chrome\.storage\.local\.set/);
 });
 
 test("difficulty correction and official color palette", () => {

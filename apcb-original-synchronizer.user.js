@@ -570,8 +570,42 @@ function selectLanguage(languageName) {
   select.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-function setSourceCode(sourceCode) {
+function setWorkspaceStoredCode(sourceCode, languageName) {
+  const pathMatch = new URL(location.href, "https://atcoder.jp").pathname.match(
+    /^\/contests\/([^/]+)\/tasks\/([^/?#]+)/
+  );
+  if (!pathMatch) return false;
+
+  const select = document.querySelector("select[name='data.LanguageId']");
+  if (!select) return false;
+
+  if (languageName) selectLanguage(languageName);
+  const languageId = select.value;
+  if (!languageId) return false;
+
+  const contestId = pathMatch[1];
+  const problemId = decodeURIComponent(pathMatch[2]);
+  const storageKey = `code:${contestId}:${problemId}:${languageId}`;
+  const backupKey = `backup_code:${contestId}:${problemId}:${languageId}`;
+
+  if (typeof chrome !== "undefined" && chrome.storage?.local) {
+    chrome.storage.local.set({ [storageKey]: sourceCode }).catch?.(() => {});
+  }
+  try {
+    localStorage.setItem(backupKey, JSON.stringify({
+      code: sourceCode,
+      timestamp: Date.now()
+    }));
+  } catch (_) {}
+
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  return true;
+}
+
+function setSourceCode(sourceCode, languageName) {
+  setWorkspaceStoredCode(sourceCode, languageName);
   const setEditorValue = () => {
+    setWorkspaceStoredCode(sourceCode, languageName);
     const textareas = Array.from(document.querySelectorAll(
       "textarea[name='sourceCode'], textarea[name='source'], textarea#sourceCode, " +
       "textarea#plain-textarea, textarea.CodeMirror-code, .CodeMirror textarea"
@@ -701,7 +735,7 @@ function processOriginalTaskPage() {
   if (normalizeAtCoderUrl(location.href) !== normalizeAtCoderUrl(pending.targetUrl)) return;
 
   waitForElement("select[name='data.LanguageId']", 5000, () => selectLanguage(pending.languageName));
-  setSourceCode(pending.sourceCode);
+  setSourceCode(pending.sourceCode, pending.languageName);
   setTimeout(hookOriginalSubmit, 100);
   waitForElement("form[action*='/submit']", 5000, hookOriginalSubmit);
 }
@@ -850,6 +884,7 @@ if (typeof window !== "undefined") {
   window.extractTaskId = extractTaskId;
   window.extractSubmissionCode = extractSubmissionCode;
   window.extractLanguageName = extractLanguageName;
+  window.setSourceCode = setSourceCode;
   window.isSubmissionDetailUrl = isSubmissionDetailUrl;
   window.isLectureTaskListUrl = isLectureTaskListUrl;
   window.isLectureSubmissionListUrl = isLectureSubmissionListUrl;
