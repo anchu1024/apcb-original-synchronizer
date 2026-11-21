@@ -369,19 +369,21 @@ function removeSubmittedTask(targetUrl) {
 }
 
 function extractSubmissionCode() {
-  const candidates = [
-    "#submission-code",
-    "pre#submission-code"
-  ];
-  for (const selector of candidates) {
-    const element = document.querySelector(selector);
-    if (!element) continue;
-    const code = typeof element.value === "string"
-      ? element.value
-      : (element.textContent || "");
-    if (code.trim()) return code;
-  }
-  return "";
+  const element = document.querySelector("pre#submission-code");
+  if (!element) return "";
+
+  const clone = element.cloneNode(true);
+  clone.querySelectorAll(
+    ".linenums, .lineno, [class*='line-number'], [data-line-number]"
+  ).forEach(node => node.remove());
+
+  const code = (clone.textContent || "").replace(/\r\n?/g, "\n");
+  if (!code.trim()) return "";
+  if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(code)) return "";
+  if (/X{20,}/.test(code) || /[\u0590-\u05FF]{20,}/.test(code)) return "";
+  return code
+    .replace(/^\uFEFF/, "")
+    .replace(/^\d{1,21}(?=\s*(?:#include|from|import|def|class|int|using|public|package))/, "");
 }
 
 function extractLanguageName() {
