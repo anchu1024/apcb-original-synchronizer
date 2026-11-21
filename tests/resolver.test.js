@@ -62,3 +62,15 @@ test("rejects non-lecture contests and malformed task IDs", () => {
     null
   );
 });
+
+test("task-list badges use isolated row DOM APIs and tbody observation", () => {
+  assert.doesNotMatch(source, /innerHTML/);
+  assert.match(source, /document\.createElement\("span"\)/);
+  assert.match(source, /insertAdjacentElement\("afterend", badge\)/);
+  assert.match(source, /dataset\.lectureSyncBadged/);
+  assert.match(source, /document\.querySelectorAll\("tbody tr"\)/);
+  assert.match(source, /observer\.observe\(tbody,/);
+  assert.match(source, /#28a745", "important"\)/);
+  assert.match(source, /#ffffff", "important"\)/);
+  assert.doesNotMatch(source, /td:nth-child/);
+});

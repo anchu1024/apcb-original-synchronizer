@@ -150,7 +150,6 @@ function extractLanguageName() {
   const candidates = [
     "#submission-language",
     "[class*='language']",
-    "table tbody tr td:nth-child(3)",
     "select[name='data.LanguageId']"
   ];
   for (const selector of candidates) {
@@ -365,41 +364,93 @@ function processOriginalTaskPage() {
 
 function renderTaskListBadges() {
   const submitted = getSubmittedTasks();
-  document.querySelectorAll("a[href*='/tasks/']").forEach(link => {
-    if (link.dataset.apcbBadged === "true") return;
+  document.querySelectorAll("tbody tr").forEach(row => {
+    const links = Array.from(row.querySelectorAll("a[href*='/tasks/']"));
+    if (links.length === 0) return;
 
-    const targetUrl = resolveOriginalTaskUrl(link.href);
+    let targetLink = links[links.length - 1];
+    const linksByHref = new Map();
+    links.forEach(link => {
+      const href = normalizeAtCoderUrl(link.href);
+      const matches = linksByHref.get(href) || [];
+      matches.push(link);
+      linksByHref.set(href, matches);
+    });
+    for (const matches of linksByHref.values()) {
+      if (matches.length >= 2) {
+        targetLink = matches[1];
+        break;
+      }
+    }
+
+    const targetUrl = resolveOriginalTaskUrl(targetLink.href);
     if (!targetUrl) return;
     const normalized = normalizeAtCoderUrl(targetUrl);
-    if (!submitted[normalized]) return;
 
-    link.dataset.apcbBadged = "true";
-    const wrapper = link.nextElementSibling?.classList?.contains("apcb-record-controls");
-    if (!wrapper) {
-      const controls = document.createElement("span");
-      controls.className = "apcb-record-controls";
-      const badge = createBadge("[本家AC記録済]", "#28a745");
-      const removeButton = document.createElement("button");
-      removeButton.type = "button";
-      removeButton.textContent = "[解除]";
-      removeButton.style.cssText = "margin-left:4px;font-size:11px;";
-      removeButton.addEventListener("click", event => {
-        event.preventDefault();
-        if (!confirm("本家AC記録を解除しますか？")) return;
-        removeSubmittedTask(normalized);
-        controls.remove();
-        link.dataset.apcbBadged = "false";
-      });
-      controls.append(badge, removeButton);
-      link.insertAdjacentElement("afterend", controls);
+    if (!submitted[normalized]) {
+      targetLink.dataset.lectureSyncBadged = "false";
+      targetLink.nextElementSibling?.classList?.contains("lecture-sync-ac-badge") &&
+        targetLink.nextElementSibling.remove();
+      targetLink.nextElementSibling?.classList?.contains("lecture-sync-ac-remove") &&
+        targetLink.nextElementSibling.remove();
+      return;
     }
+
+    const existingBadge = targetLink.nextElementSibling;
+    const existingRemove = existingBadge?.nextElementSibling;
+    if (
+      targetLink.dataset.lectureSyncBadged === "true" &&
+      existingBadge?.classList?.contains("lecture-sync-ac-badge") &&
+      existingRemove?.classList?.contains("lecture-sync-ac-remove")
+    ) {
+      return;
+    }
+
+    targetLink.dataset.lectureSyncBadged = "false";
+    if (existingBadge?.classList?.contains("lecture-sync-ac-badge")) existingBadge.remove();
+    if (existingRemove?.classList?.contains("lecture-sync-ac-remove")) existingRemove.remove();
+
+    const badge = document.createElement("span");
+    badge.className = "lecture-sync-ac-badge";
+    badge.textContent = "[本家AC記録済]";
+    badge.style.setProperty("background", "#28a745", "important");
+    badge.style.setProperty("color", "#ffffff", "important");
+    badge.style.setProperty("border-radius", "3px", "important");
+    badge.style.setProperty("display", "inline-block", "important");
+    badge.style.setProperty("margin", "0 4px", "important");
+    badge.style.setProperty("padding", "1px 5px", "important");
+    badge.style.setProperty("font-size", "12px", "important");
+    badge.style.setProperty("line-height", "1.5", "important");
+    badge.style.setProperty("vertical-align", "middle", "important");
+
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.className = "lecture-sync-ac-remove";
+    removeButton.textContent = "[解除]";
+    removeButton.style.setProperty("margin-left", "0", "important");
+    removeButton.style.setProperty("font-size", "11px", "important");
+    removeButton.style.setProperty("display", "inline-block", "important");
+    removeButton.addEventListener("click", event => {
+      event.preventDefault();
+      if (!confirm("本家AC記録を解除しますか？")) return;
+      removeSubmittedTask(normalized);
+      badge.remove();
+      removeButton.remove();
+      targetLink.dataset.lectureSyncBadged = "false";
+    });
+
+    targetLink.insertAdjacentElement("afterend", badge);
+    badge.insertAdjacentElement("afterend", removeButton);
+    targetLink.dataset.lectureSyncBadged = "true";
   });
 }
 
 function observeTaskLists() {
   renderTaskListBadges();
-  const observer = new MutationObserver(renderTaskListBadges);
-  observer.observe(document.documentElement, { childList: true, subtree: true });
+  document.querySelectorAll("tbody").forEach(tbody => {
+    const observer = new MutationObserver(renderTaskListBadges);
+    observer.observe(tbody, { childList: true, subtree: true });
+  });
   setInterval(renderTaskListBadges, 1000);
 }
 
