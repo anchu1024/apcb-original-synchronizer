@@ -108,6 +108,9 @@ test("AC transfer waits for submission code and language extraction", () => {
   assert.match(source, /lectureUrl: normalizeAtCoderUrl\(lectureUrl\)/);
   assert.match(source, /pre#submission-code/);
   assert.match(source, /normalizeLanguage\(option\.textContent\)/);
+  assert.match(source, /textarea\[name='sourceCode'\]/);
+  assert.match(source, /\["input", "change", "keyup"\]/);
+  assert.match(source, /10000/);
 });
 
 test("difficulty correction and official color palette", () => {

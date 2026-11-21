@@ -501,17 +501,30 @@ function selectLanguage(languageName) {
 }
 
 function setSourceCode(sourceCode) {
-  const textarea = document.querySelector("textarea[name='sourceCode']");
-  if (textarea) {
-    textarea.value = sourceCode;
-    textarea.dispatchEvent(new Event("input", { bubbles: true }));
-  }
-
   const setCodeMirrorValue = () => {
-    if (textarea?.CodeMirror && typeof textarea.CodeMirror.setValue === "function") {
-      textarea.CodeMirror.setValue(sourceCode);
-    }
-    if (window.CodeMirror && typeof window.CodeMirror.setValue === "function") {
+    const textareas = Array.from(document.querySelectorAll(
+      "textarea[name='sourceCode'], textarea[name='source'], textarea.CodeMirror-code, .CodeMirror textarea"
+    ));
+    textareas.forEach(textarea => {
+      const prototype = Object.getPrototypeOf(textarea);
+      const descriptor = prototype && Object.getOwnPropertyDescriptor(prototype, "value");
+      if (descriptor?.set) {
+        descriptor.set.call(textarea, sourceCode);
+      } else {
+        textarea.value = sourceCode;
+      }
+      ["input", "change", "keyup"].forEach(type => {
+        textarea.dispatchEvent(new Event(type, { bubbles: true }));
+      });
+      if (textarea?.CodeMirror && typeof textarea.CodeMirror.setValue === "function") {
+        textarea.CodeMirror.setValue(sourceCode);
+      }
+      if (typeof textarea?.value === "string" && textarea.value !== sourceCode) {
+        textarea.value = sourceCode;
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    });
+    if (typeof window.CodeMirror?.setValue === "function") {
       window.CodeMirror.setValue(sourceCode);
     }
     if (Array.isArray(window.CodeMirror?.editors)) {
@@ -527,7 +540,11 @@ function setSourceCode(sourceCode) {
   };
 
   setCodeMirrorValue();
-  waitForElement("textarea[name='sourceCode']", 5000, () => setCodeMirrorValue());
+  waitForElement(
+    "textarea[name='sourceCode'], textarea[name='source'], .CodeMirror textarea",
+    10000,
+    () => setCodeMirrorValue()
+  );
   setTimeout(setCodeMirrorValue, 500);
   setTimeout(setCodeMirrorValue, 1500);
 }
