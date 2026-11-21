@@ -154,6 +154,9 @@ test("AC transfer waits for submission code and language extraction", () => {
   assert.match(source, /code:\$\{contestId\}:\$\{problemId\}:\$\{languageId\}/);
   assert.match(source, /backup_code:\$\{contestId\}:\$\{problemId\}:\$\{languageId\}/);
   assert.match(source, /chrome\.storage\.local\.set/);
+  assert.match(source, /function hasAtCoderWorkspaceEditor/);
+  assert.match(source, /setWorkspaceStoredCode\(sourceCode, languageName\)/);
+  assert.match(source, /setLegacySourceCode\(sourceCode\)/);
 });
 
 test("difficulty correction and official color palette", () => {

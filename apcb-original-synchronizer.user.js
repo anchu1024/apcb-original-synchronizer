@@ -602,10 +602,19 @@ function setWorkspaceStoredCode(sourceCode, languageName) {
   return true;
 }
 
-function setSourceCode(sourceCode, languageName) {
-  setWorkspaceStoredCode(sourceCode, languageName);
+function hasAtCoderWorkspaceEditor() {
+  if (document.querySelector("#atcoder-workspace-editor, [data-atcoder-workspace], .atcoder-workspace")) {
+    return true;
+  }
+  return Array.from(document.querySelectorAll("iframe")).some(iframe => {
+    const src = iframe.getAttribute("src") || "";
+    return /workspace|atcoder-workspace|editor/i.test(src)
+      || iframe.title?.toLower?.().includes("workspace");
+  });
+}
+
+function setLegacySourceCode(sourceCode) {
   const setEditorValue = () => {
-    setWorkspaceStoredCode(sourceCode, languageName);
     const textareas = Array.from(document.querySelectorAll(
       "textarea[name='sourceCode'], textarea[name='source'], textarea#sourceCode, " +
       "textarea#plain-textarea, textarea.CodeMirror-code, .CodeMirror textarea"
@@ -640,7 +649,6 @@ function setSourceCode(sourceCode, languageName) {
         changed = true;
       }
     });
-
     if (typeof window.CodeMirror?.setValue === "function") {
       window.CodeMirror.setValue(sourceCode);
       changed = true;
@@ -659,7 +667,6 @@ function setSourceCode(sourceCode, languageName) {
         changed = true;
       }
     });
-
     if (typeof window.ace?.edit === "function") {
       document.querySelectorAll(".ace_editor").forEach(element => {
         const editor = window.ace.edit(element);
@@ -694,6 +701,13 @@ function setSourceCode(sourceCode, languageName) {
   setTimeout(setEditorValue, 500);
   setTimeout(setEditorValue, 1500);
   setTimeout(setEditorValue, 5000);
+}
+
+function setSourceCode(sourceCode, languageName) {
+  if (hasAtCoderWorkspaceEditor()) {
+    setWorkspaceStoredCode(sourceCode, languageName);
+  }
+  setLegacySourceCode(sourceCode);
 }
 
 function showTransferBanner() {
@@ -885,6 +899,7 @@ if (typeof window !== "undefined") {
   window.extractSubmissionCode = extractSubmissionCode;
   window.extractLanguageName = extractLanguageName;
   window.setSourceCode = setSourceCode;
+  window.hasAtCoderWorkspaceEditor = hasAtCoderWorkspaceEditor;
   window.isSubmissionDetailUrl = isSubmissionDetailUrl;
   window.isLectureTaskListUrl = isLectureTaskListUrl;
   window.isLectureSubmissionListUrl = isLectureSubmissionListUrl;
