@@ -1,20 +1,14 @@
-// ==UserScript==
-// @name         APCB Original Synchronizer
-// @namespace    https://github.com/anchu1024/apcb-original-synchronizer
-// @version      1.0.0
-// @description  Lecture contest AC submissions are transferred to their original AtCoder task.
-// @match        https://atcoder.jp/contests/*
-// @grant        GM_setValue
-// @grant        GM_getValue
-// @grant        GM_openInTab
-// ==/UserScript==
-
 const CONFIG = Object.freeze({
   LECTURE_CONTEST_REGEX: /^apcb_exercise_/,
   PENDING_TRANSFER_TTL_MS: 10 * 60 * 1000,
   SUBMITTED_TASKS_KEY: "submitted_tasks",
   PENDING_TRANSFER_KEY: "pending_transfer"
 });
+
+let chromeStorageCache = {
+  submitted_tasks: {},
+  pending_transfer: null
+};
 
 function normalizeAtCoderUrl(url) {
   try {
@@ -50,12 +44,10 @@ function resolveOriginalTaskUrl(lectureTaskUrl) {
 }
 
 function gmGetValue(key, fallback) {
-  try {
-    if (typeof GM_getValue === "function") {
-      const value = GM_getValue(key, fallback);
-      return typeof value === "string" ? JSON.parse(value) : value;
-    }
-  } catch (_) {}
+  if (typeof chrome !== "undefined" && chrome.storage?.local) {
+    const stored = chromeStorageCache[key];
+    return stored === undefined ? fallback : stored;
+  }
   try {
     const value = localStorage.getItem(key);
     return value === null ? fallback : JSON.parse(value);
@@ -65,12 +57,11 @@ function gmGetValue(key, fallback) {
 }
 
 function gmSetValue(key, value) {
-  try {
-    if (typeof GM_setValue === "function") {
-      GM_setValue(key, typeof value === "string" ? value : JSON.stringify(value));
-      return;
-    }
-  } catch (_) {}
+  if (typeof chrome !== "undefined" && chrome.storage?.local) {
+    chromeStorageCache[key] = value;
+    chrome.storage.local.set({ [key]: value }).catch?.(() => {});
+    return;
+  }
   try {
     localStorage.setItem(key, JSON.stringify(value));
   } catch (_) {}
@@ -232,8 +223,8 @@ function monitorSubmissionDetail() {
     createdAt: Date.now()
   });
 
-  if (typeof GM_openInTab === "function") {
-    GM_openInTab(normalizedTarget, { active: true });
+  if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+    chrome.runtime.sendMessage({ type: "openInTab", url: normalizedTarget });
   } else {
     window.open(normalizedTarget, "_blank");
   }
@@ -471,7 +462,43 @@ function main() {
 if (typeof window !== "undefined") {
   window.resolveOriginalTaskUrl = resolveOriginalTaskUrl;
   window.CONFIG = CONFIG;
-  if (document.readyState === "loading") {
+  const start = () => {
+    if (typeof chrome !== "undefined" && chrome.storage?.local) {
+      chrome.storage.local.get(
+        [CONFIG.SUBMITTED_TASKS_KEY, CONFIG.PENDING_TRANSFER_KEY],
+        values => {
+          chromeStorageCache = {
+            submitted_tasks:
+              values[CONFIG.SUBMITTED_TASKS_KEY] || {},
+            pending_transfer:
+              values[CONFIG.PENDING_TRANSFER_KEY] || null
+          };
+          if (chrome.storage.onChanged) {
+            chrome.storage.onChanged.addListener((changes, areaName) => {
+              if (areaName !== "local") return;
+              if (changes.submitted_tasks) {
+                chromeStorageCache.submitted_tasks =
+                  changes.submitted_tasks.newValue || {};
+              }
+              if (changes.pending_transfer) {
+                chromeStorageCache.pending_transfer =
+                  changes.pending_transfer.newValue || null;
+              }
+              renderTaskListBadges();
+            });
+          }
+          main();
+        }
+      );
+    } else if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", main);
+    } else {
+      main();
+    }
+  };
+  if (typeof chrome !== "undefined" && chrome.storage?.local) {
+    start();
+  } else if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", main);
   } else {
     main();

@@ -74,3 +74,30 @@ test("task-list badges use isolated row DOM APIs and tbody observation", () => {
   assert.match(source, /#ffffff", "important"\)/);
   assert.doesNotMatch(source, /td:nth-child/);
 });
+
+test("Chrome MV3 manifest enables storage and AtCoder content scripts", () => {
+  const manifest = JSON.parse(fs.readFileSync(
+    new URL("../manifest.json", `file://${__dirname}/`).pathname,
+    "utf8"
+  ));
+  assert.equal(manifest.manifest_version, 3);
+  assert.ok(manifest.permissions.includes("storage"));
+  assert.ok(manifest.host_permissions.includes("https://atcoder.jp/contests/*"));
+  assert.equal(manifest.background.service_worker, "background.js");
+  assert.equal(
+    manifest.content_scripts[0].js[0],
+    "apcb-original-synchronizer.user.js"
+  );
+});
+
+test("Chrome extension uses storage and validated tab creation", () => {
+  assert.match(source, /chrome\.storage\.local/);
+  assert.match(source, /chrome\.runtime\.sendMessage/);
+  assert.doesNotMatch(source, /GM_(getValue|setValue|openInTab)/);
+  const background = fs.readFileSync(
+    new URL("../background.js", `file://${__dirname}/`).pathname,
+    "utf8"
+  );
+  assert.match(background, /chrome\.tabs\.create/);
+  assert.match(background, /url\.origin !== "https:\/\/atcoder\.jp"/);
+});

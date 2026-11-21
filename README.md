@@ -1,43 +1,59 @@
 # APCB Original Synchronizer
 
-AtCoderの講義用特設コンテストで提出がACになったとき、その提出コードと言語を本家コンテストの対応問題へ引き継ぐTampermonkey用スクリプトです。
+AtCoderの講義用特設コンテストで提出がACになったとき、その提出コードと言語を本家コンテストの対応問題へ引き継ぐChrome拡張機能です。
 
 このスクリプトは提出を自動送信しません。本家問題ページへコードと言語を転記するだけで、最後の「提出」ボタンは利用者が手動で押します。
+
+Chrome拡張機能として読み込める構成も同梱しています。
 
 ## 対応環境
 
 - Google Chrome
-- [Tampermonkey](https://www.tampermonkey.net/)（推奨）
 - AtCoderへログイン済みのブラウザ
 
-Tampermonkey以外の拡張機能としての導入は、このリポジトリには含まれていません。Chromeで利用する場合は、現時点ではTampermonkey経由の導入を推奨します。
+Chrome拡張機能として導入します。ユーザースクリプトマネージャーは不要です。
 
-## 導入手順
+## Chrome拡張機能として導入する手順
 
-### 1. TampermonkeyをChromeに追加する
+### 1. リポジトリを用意する
 
-1. Chromeウェブストアから **Tampermonkey** をインストールします。
-2. Chromeの拡張機能メニューからTampermonkeyを開きます。
-3. Tampermonkeyのダッシュボードを開きます。
+1. このリポジトリをZIPでダウンロードして展開するか、Gitでクローンします。
+2. 展開先に `manifest.json` と `background.js` があることを確認します。
 
-### 2. このスクリプトを登録する
+### 2. Chromeに読み込む
 
-次のいずれかの方法で登録します。
+1. Chromeで `chrome://extensions/` を開きます。
+2. 右上の「デベロッパー モード」を有効にします。
+3. 「パッケージ化されていない拡張機能を読み込む」を押します。
+4. `manifest.json` があるリポジトリのルートフォルダーを選択します。
+5. 一覧に **APCB Original Synchronizer** が表示され、「有効」になっていることを確認します。
 
-#### 方法A: ダッシュボードから直接作成する
+導入後はChromeの再起動や拡張機能の再読み込みが必要になる場合があります。
 
-1. Tampermonkeyダッシュボードの「Utilities」またはスクリプト一覧を開きます。
-2. 「Create a new script」を選択します。
-3. [`apcb-original-synchronizer.user.js`](./apcb-original-synchronizer.user.js) の内容をすべて貼り付けます。
-4. `Ctrl+S`（macOSでは`Cmd+S`）で保存します。
+## 拡張機能の動作確認
 
-#### 方法B: スクリプトの生ファイルを開く
+1. `https://atcoder.jp/contests/` の講義用特設コンテストを開きます。
+2. 提出詳細画面でステータスが `AC` になるのを確認します。
+3. 本家コンテストの問題タブが1回だけ開くことを確認します。
+4. 本家ページでコードと言語が転記されていることを確認します。
+5. 問題文を確認し、利用者自身で「提出」ボタンを押します。
 
-1. GitHub上の [`apcb-original-synchronizer.user.js`](./apcb-original-synchronizer.user.js) をブラウザで開きます。
-2. Tampermonkeyに自動インストールできる画面が表示されたら「Install」を押します。
-3. すでに同名のスクリプトがある場合は、上書きするか別バージョンとして確認します。
+提出ボタンを押すまで本家AC記録には保存されません。
 
-スクリプト一覧で `APCB Original Synchronizer` が有効になっていることを確認してください。
+## 更新方法
+
+ソースを更新した場合：
+
+1. `chrome://extensions/` を開きます。
+2. **APCB Original Synchronizer** の更新アイコン、または「更新」ボタンを押します。
+3. 対象のAtCoderページを再読み込みします。
+
+## 必要な権限
+
+- `storage`: 本家AC記録と引き継ぎデータを拡張機能内に保存
+- `host_permissions`: `https://atcoder.jp/contests/*` のページにスクリプトを実行
+
+本拡張機能はAtCoder以外への情報送信やサーバーへの連続自動アクセスを行いません。
 
 ## 使用方法
 
@@ -78,13 +94,17 @@ const CONFIG = Object.freeze({
 
 提出詳細画面でも、すでに記録済みの場合は `[本家AC記録済]` バッジと `[記録解除]` ボタンが表示されます。解除する際は確認ダイアログが表示されます。
 
-すべての記録をまとめて削除する場合は、Tampermonkeyダッシュボードの「Storage」またはブラウザのストレージ消去機能から、拡張機能スクリプトの `submitted_tasks` を削除できます。
+すべての記録をまとめて削除する場合は、拡張機能のDevToolsで次を実行します。
+
+```javascript
+chrome.storage.local.remove(["submitted_tasks", "pending_transfer"]);
+```
 
 ## よくあるトラブル
 
 ### 本家タブが開かない
 
-- Tampermonkeyで `APCB Original Synchronizer` が有効になっているか確認します。
+- `chrome://extensions/` で **APCB Original Synchronizer** が有効になっているか確認します。
 - タブポップアップのブロック設定を確認します。
 - 提出詳細URLが特設コンテストの範囲か確認します。
 - スクリプトの「Check for updates」を行ってからブラウザを再読み込みします。

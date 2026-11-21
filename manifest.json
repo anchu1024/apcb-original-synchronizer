@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "APCB Original Synchronizer",
+  "version": "1.0.0",
+  "description": "講義用AtCoderコンテストのAC提出を本家問題へ手動提出用に転記します。",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://atcoder.jp/contests/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://atcoder.jp/contests/*"
+      ],
+      "js": [
+        "apcb-original-synchronizer.user.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
