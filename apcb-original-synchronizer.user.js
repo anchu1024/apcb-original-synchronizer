@@ -146,7 +146,11 @@ function applyDifficultyDisplays() {
   if (!isLectureContestUrl(location.href)) return;
   const pathname = new URL(location.href).pathname;
 
-  if (/\/tasks\/?$/.test(pathname)) {
+  if (/\/standings\/?$/.test(pathname)) {
+    document.querySelectorAll("a[href*='/tasks/']").forEach(link => {
+      applyDifficultyToLink(link);
+    });
+  } else if (/\/tasks\/?$/.test(pathname)) {
     document.querySelectorAll("tbody tr").forEach(row => {
       const links = Array.from(row.querySelectorAll("a[href*='/tasks/']"));
       if (links.length === 0) return;
@@ -197,11 +201,11 @@ function applyDifficultyDisplays() {
         const color = getDifficultyColor(difficulty);
         const fillRatio = Math.min(1, Math.max(0, (difficulty % 400) / 400));
         circle.style.setProperty("display", "inline-block", "important");
-        circle.style.setProperty("width", "12px", "important");
-        circle.style.setProperty("height", "12px", "important");
-        circle.style.setProperty("border", `1px solid ${color}`, "important");
+        circle.style.setProperty("width", "24px", "important");
+        circle.style.setProperty("height", "24px", "important");
+        circle.style.setProperty("border", `2px solid ${color}`, "important");
         circle.style.setProperty("border-radius", "50%", "important");
-        circle.style.setProperty("margin-right", "4px", "important");
+        circle.style.setProperty("margin-right", "8px", "important");
         circle.style.setProperty("vertical-align", "middle", "important");
         circle.style.setProperty("box-shadow", `0 0 2px ${color}`, "important");
         circle.style.setProperty(
@@ -533,20 +537,11 @@ function findStatusElement() {
   return statusText || null;
 }
 
-function showSubmissionDuplicate(targetUrl) {
+function showSubmissionDuplicate() {
   const container = document.createElement("div");
   container.style.cssText = "margin:12px 0;";
   const badge = createBadge("[本家AC記録済]", "#28a745");
-  const removeButton = document.createElement("button");
-  removeButton.type = "button";
-  removeButton.textContent = "[記録解除]";
-  removeButton.style.marginLeft = "6px";
-  removeButton.addEventListener("click", () => {
-    if (!confirm("本家AC記録を解除しますか？")) return;
-    removeSubmittedTask(targetUrl);
-    container.remove();
-  });
-  container.append(badge, removeButton);
+  container.append(badge);
   const main = document.querySelector("#main-container, main, body");
   (main || document.body).prepend(container);
 }
@@ -570,7 +565,7 @@ function monitorSubmissionDetail() {
 
   const normalizedTarget = normalizeAtCoderUrl(targetUrl);
   if (getSubmittedTasks()[normalizedTarget]) {
-    showSubmissionDuplicate(normalizedTarget);
+    showSubmissionDuplicate();
     return;
   }
 
@@ -915,24 +910,19 @@ function renderTaskListBadges() {
       targetLink.dataset.lectureSyncBadged = "false";
       targetLink.nextElementSibling?.classList?.contains("lecture-sync-ac-badge") &&
         targetLink.nextElementSibling.remove();
-      targetLink.nextElementSibling?.classList?.contains("lecture-sync-ac-remove") &&
-        targetLink.nextElementSibling.remove();
       return;
     }
 
     const existingBadge = targetLink.nextElementSibling;
-    const existingRemove = existingBadge?.nextElementSibling;
     if (
       targetLink.dataset.lectureSyncBadged === "true" &&
-      existingBadge?.classList?.contains("lecture-sync-ac-badge") &&
-      existingRemove?.classList?.contains("lecture-sync-ac-remove")
+      existingBadge?.classList?.contains("lecture-sync-ac-badge")
     ) {
       return;
     }
 
     targetLink.dataset.lectureSyncBadged = "false";
     if (existingBadge?.classList?.contains("lecture-sync-ac-badge")) existingBadge.remove();
-    if (existingRemove?.classList?.contains("lecture-sync-ac-remove")) existingRemove.remove();
 
     const badge = document.createElement("span");
     badge.className = "lecture-sync-ac-badge";
@@ -947,24 +937,7 @@ function renderTaskListBadges() {
     badge.style.setProperty("line-height", "1.5", "important");
     badge.style.setProperty("vertical-align", "middle", "important");
 
-    const removeButton = document.createElement("button");
-    removeButton.type = "button";
-    removeButton.className = "lecture-sync-ac-remove";
-    removeButton.textContent = "[解除]";
-    removeButton.style.setProperty("margin-left", "0", "important");
-    removeButton.style.setProperty("font-size", "11px", "important");
-    removeButton.style.setProperty("display", "inline-block", "important");
-    removeButton.addEventListener("click", event => {
-      event.preventDefault();
-      if (!confirm("本家AC記録を解除しますか？")) return;
-      removeSubmittedTask(normalized);
-      badge.remove();
-      removeButton.remove();
-      targetLink.dataset.lectureSyncBadged = "false";
-    });
-
     targetLink.insertAdjacentElement("afterend", badge);
-    badge.insertAdjacentElement("afterend", removeButton);
     targetLink.dataset.lectureSyncBadged = "true";
   });
 }
@@ -999,7 +972,12 @@ function observeSubmissionListColors() {
 function main() {
   if (typeof document === "undefined" || typeof location === "undefined") return;
   const pathname = new URL(location.href).pathname;
-  if (/\/submissions\/me\/?$/.test(pathname)) {
+  if (/\/standings\/?$/.test(pathname)) {
+    applyDifficultyDisplays();
+    const observer = new MutationObserver(applyDifficultyDisplays);
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    setInterval(applyDifficultyDisplays, 1000);
+  } else if (/\/submissions\/me\/?$/.test(pathname)) {
     observeTaskLists();
   } else if (isLectureSubmissionListUrl(location.href)) {
     observeSubmissionListColors();
