@@ -108,11 +108,8 @@ test("live Turnstile popup submits through a native form", () => {
   assert.match(source, /form\.requestSubmit/);
   assert.match(source, /submit\(\);/);
   assert.match(source, /function setNativeSourceCodeInPage/);
-  assert.match(source, /window\.ace\?\.edit/);
-  assert.match(source, /JSON\.stringify\(sourceCode\)/);
-  assert.match(source, /setTimeout\(applySource, 100\)/);
-  assert.match(source, /aceValueMatches && textareasMatch/);
-  assert.doesNotMatch(source, /diagnosticWin\.ace|win\?\.ace/);
+  assert.match(source, /type: "setNativeSubmitSource"/);
+  assert.doesNotMatch(source, /script\.textContent/);
   assert.match(source, /turnstileInput\.value\.length <= 20/);
   assert.match(source, /width:640px/);
   assert.match(source, /isExtensionContextValid/);
@@ -167,6 +164,7 @@ test("Chrome MV3 manifest enables storage and AtCoder content scripts", () => {
   assert.equal(manifest.manifest_version, 3);
   assert.ok(manifest.permissions.includes("storage"));
   assert.ok(manifest.permissions.includes("scripting"));
+  assert.ok(manifest.permissions.includes("webNavigation"));
   assert.ok(manifest.permissions.includes("clipboardRead"));
   assert.ok(manifest.host_permissions.includes("https://atcoder.jp/contests/*"));
   assert.equal(manifest.background.service_worker, "background.js");
@@ -201,6 +199,10 @@ test("Chrome extension uses storage and validated tab creation", () => {
   assert.match(background, /url\.origin !== "https:\/\/atcoder\.jp"/);
   assert.match(background, /setWorkspaceCode/);
   assert.match(background, /chrome\.scripting\.executeScript/);
+  assert.match(background, /chrome\.webNavigation\.getAllFrames/);
+  assert.match(background, /type === "setNativeSubmitSource"/);
+  assert.match(background, /window\.ace\?\.edit/);
+  assert.match(background, /aceValueMatches && textareasMatch/);
   assert.match(background, /allFrames: true/);
   assert.match(background, /world: "MAIN"/);
   assert.match(background, /setAtCoderSource/);

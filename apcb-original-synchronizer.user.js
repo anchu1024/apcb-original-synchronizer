@@ -1135,136 +1135,32 @@ function setNativeSubmitForm(iframeDocument, pending) {
   return form;
 }
 
-function setNativeSourceCodeInPage(doc, sourceCode) {
-  const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const resultAttribute = `data-apcb-source-result-${requestId}`;
-  const eventName = `apcb-source-result-${requestId}`;
-  const serializedSourceCode = JSON.stringify(sourceCode)
-    .replace(/</g, "\\u003c")
-    .replace(/\u2028/g, "\\u2028")
-    .replace(/\u2029/g, "\\u2029");
-
+function setNativeSourceCodeInPage(sourceCode, contestId, taskId) {
   return new Promise(resolve => {
     let finished = false;
-    const cleanup = () => {
-      doc.removeEventListener(eventName, onResult);
-      doc.documentElement?.removeAttribute(resultAttribute);
-      clearTimeout(timeout);
-    };
     const finish = result => {
       if (finished) return;
       finished = true;
-      cleanup();
+      clearTimeout(timeout);
       resolve(result);
     };
-    const onResult = () => {
-      const resultText = doc.documentElement?.getAttribute(resultAttribute);
-      if (!resultText) return;
-      try {
-        finish(JSON.parse(resultText));
-      } catch {
-        finish({ success: false });
-      }
+    const attempt = () => {
+      if (finished) return;
+      safeRuntimeSendMessage({
+        type: "setNativeSubmitSource",
+        sourceCode,
+        contestId,
+        taskId
+      }, response => {
+        if (response?.retry && !finished) {
+          setTimeout(attempt, 200);
+          return;
+        }
+        finish(response?.ok ? response : { success: false });
+      });
     };
     const timeout = setTimeout(() => finish({ success: false }), 22000);
-    doc.addEventListener(eventName, onResult);
-
-    const script = doc.createElement("script");
-    script.textContent = `(() => {
-      const sourceCode = ${serializedSourceCode};
-      const resultAttribute = ${JSON.stringify(resultAttribute)};
-      const eventName = ${JSON.stringify(eventName)};
-      const deadline = Date.now() + 20000;
-      let editor = null;
-
-      const finish = result => {
-        document.documentElement.setAttribute(resultAttribute, JSON.stringify(result));
-        document.dispatchEvent(new Event(eventName));
-      };
-
-      const applySource = () => {
-        const form = document.querySelector("form[action*='/submit']");
-        const editorElement = document.getElementById("editor");
-        const textareas = form ? Array.from(form.querySelectorAll(
-          "textarea[name='sourceCode'], textarea[name='source'], textarea#sourceCode, " +
-          "textarea#plain-textarea"
-        )) : [];
-
-        if (!form || !editorElement || !textareas.length ||
-            typeof window.ace?.edit !== "function") {
-          if (Date.now() >= deadline) {
-            finish({
-              success: false,
-              textareaCount: textareas.length,
-              editorAvailable: !!editor,
-              aceAvailable: typeof window.ace?.edit === "function"
-            });
-            return;
-          }
-          setTimeout(applySource, 100);
-          return;
-        }
-
-        try {
-          editor = editor || window.ace.edit(editorElement);
-          if (typeof editor?.setValue !== "function" ||
-              typeof editor?.getValue !== "function") {
-            throw new Error("Ace editor is not ready");
-          }
-        } catch {
-          if (Date.now() >= deadline) {
-            finish({ success: false, textareaCount: textareas.length, editorAvailable: false });
-            return;
-          }
-          setTimeout(applySource, 100);
-          return;
-        }
-
-        if (editor.getValue() !== sourceCode) {
-          editor.setValue(sourceCode, -1);
-        }
-        textareas.forEach(textarea => {
-          if (textarea.value === sourceCode) return;
-          const setter = Object.getOwnPropertyDescriptor(
-            HTMLTextAreaElement.prototype,
-            "value"
-          )?.set;
-          if (setter) setter.call(textarea, sourceCode);
-          else textarea.value = sourceCode;
-          textarea.dispatchEvent(new Event("input", { bubbles: true }));
-          textarea.dispatchEvent(new Event("change", { bubbles: true }));
-        });
-
-        const aceValueMatches = editor.getValue() === sourceCode;
-        const textareasMatch = textareas.every(textarea => textarea.value === sourceCode);
-        if (aceValueMatches && textareasMatch) {
-          finish({
-            success: true,
-            textareaCount: textareas.length,
-            plainTextareaFound: !!form.querySelector("#plain-textarea"),
-            aceValueMatches,
-            textareasMatch
-          });
-          return;
-        }
-
-        if (Date.now() >= deadline) {
-          finish({
-            success: false,
-            textareaCount: textareas.length,
-            plainTextareaFound: !!form.querySelector("#plain-textarea"),
-            aceValueMatches,
-            textareasMatch
-          });
-          return;
-        }
-        setTimeout(applySource, 100);
-      };
-
-      applySource();
-    })();`;
-    (doc.documentElement || doc.head).append(script);
-    script.remove();
+    attempt();
   });
 }
 
@@ -1368,7 +1264,7 @@ function showTransferPopup(pending) {
         }
         if (!sourceInjectionStarted) {
           sourceInjectionStarted = true;
-          setNativeSourceCodeInPage(doc, pending.sourceCode).then(result => {
+          setNativeSourceCodeInPage(pending.sourceCode, contestId, taskId).then(result => {
             sourceInjectionResult = result;
             if (!result.success) status.textContent = "ソースコードを設定できませんでした";
           }, error => {

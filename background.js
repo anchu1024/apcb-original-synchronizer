@@ -92,6 +92,155 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     pollTransferQueue().then(() => sendResponse({ ok: true }));
     return true;
   }
+  if (message?.type === "setNativeSubmitSource" &&
+      typeof message.sourceCode === "string" &&
+      typeof message.contestId === "string" &&
+      typeof message.taskId === "string") {
+    if (!sender.tab?.id ||
+        !/^[A-Za-z0-9_-]+$/.test(message.contestId) ||
+        !/^[A-Za-z0-9_-]+$/.test(message.taskId)) {
+      sendResponse({ ok: false });
+      return true;
+    }
+
+    chrome.webNavigation.getAllFrames({ tabId: sender.tab.id }, frames => {
+      if (chrome.runtime.lastError) {
+        sendResponse({ ok: false, error: chrome.runtime.lastError.message });
+        return;
+      }
+      const targetFrame = frames?.find(frame => {
+        if (frame.frameId === sender.frameId) return false;
+        try {
+          const frameUrl = new URL(frame.url);
+          return frameUrl.origin === "https://atcoder.jp" &&
+            frameUrl.pathname === `/contests/${message.contestId}/submit` &&
+            frameUrl.searchParams.get("taskScreenName") === message.taskId;
+        } catch (_) {
+          return false;
+        }
+      });
+      if (!targetFrame) {
+        sendResponse({ ok: false, retry: true });
+        return;
+      }
+
+      chrome.scripting.executeScript({
+        target: { tabId: sender.tab.id, frameIds: [targetFrame.frameId] },
+        world: "MAIN",
+        func: (sourceCode, contestId, taskId) => new Promise(resolve => {
+          const pageUrl = new URL(location.href);
+          if (pageUrl.origin !== "https://atcoder.jp" ||
+              pageUrl.pathname !== `/contests/${contestId}/submit` ||
+              pageUrl.searchParams.get("taskScreenName") !== taskId) {
+            resolve({ matched: false });
+            return;
+          }
+
+          const deadline = Date.now() + 20000;
+          let editor = null;
+          const applySource = () => {
+            const form = document.querySelector("form[action*='/submit']");
+            const editorElement = document.getElementById("editor");
+            const textareas = form ? Array.from(form.querySelectorAll(
+              "textarea[name='sourceCode'], textarea[name='source'], textarea#sourceCode, " +
+              "textarea#plain-textarea"
+            )) : [];
+
+            if (!form || !editorElement || !textareas.length ||
+                typeof window.ace?.edit !== "function") {
+              if (Date.now() >= deadline) {
+                resolve({
+                  matched: true,
+                  success: false,
+                  textareaCount: textareas.length,
+                  editorAvailable: !!editor,
+                  aceAvailable: typeof window.ace?.edit === "function"
+                });
+                return;
+              }
+              setTimeout(applySource, 100);
+              return;
+            }
+
+            try {
+              editor = editor || window.ace.edit(editorElement);
+              if (typeof editor?.setValue !== "function" ||
+                  typeof editor?.getValue !== "function") {
+                throw new Error("Ace editor is not ready");
+              }
+            } catch (_) {
+              if (Date.now() >= deadline) {
+                resolve({
+                  matched: true,
+                  success: false,
+                  textareaCount: textareas.length,
+                  editorAvailable: false
+                });
+                return;
+              }
+              setTimeout(applySource, 100);
+              return;
+            }
+
+            if (editor.getValue() !== sourceCode) {
+              editor.setValue(sourceCode, -1);
+            }
+            textareas.forEach(textarea => {
+              if (textarea.value === sourceCode) return;
+              const setter = Object.getOwnPropertyDescriptor(
+                HTMLTextAreaElement.prototype,
+                "value"
+              )?.set;
+              if (setter) setter.call(textarea, sourceCode);
+              else textarea.value = sourceCode;
+              textarea.dispatchEvent(new Event("input", { bubbles: true }));
+              textarea.dispatchEvent(new Event("change", { bubbles: true }));
+            });
+
+            const aceValueMatches = editor.getValue() === sourceCode;
+            const textareasMatch = textareas.every(textarea => textarea.value === sourceCode);
+            if (aceValueMatches && textareasMatch) {
+              resolve({
+                matched: true,
+                success: true,
+                textareaCount: textareas.length,
+                plainTextareaFound: !!form.querySelector("#plain-textarea"),
+                aceValueMatches,
+                textareasMatch
+              });
+              return;
+            }
+
+            if (Date.now() >= deadline) {
+              resolve({
+                matched: true,
+                success: false,
+                textareaCount: textareas.length,
+                plainTextareaFound: !!form.querySelector("#plain-textarea"),
+                aceValueMatches,
+                textareasMatch
+              });
+              return;
+            }
+            setTimeout(applySource, 100);
+          };
+
+          applySource();
+        }),
+        args: [message.sourceCode, message.contestId, message.taskId]
+      }).then(results => {
+        const result = results?.[0]?.result;
+        if (!result?.matched) {
+          sendResponse({ ok: false, retry: true });
+          return;
+        }
+        sendResponse({ ok: result.success, ...result });
+      }).catch(error => {
+        sendResponse({ ok: false, error: String(error?.message || error) });
+      });
+    });
+    return true;
+  }
   if (message?.type === "setAtCoderSource" && typeof message.sourceCode === "string") {
     if (!sender.tab?.id) {
       sendResponse({ ok: false });

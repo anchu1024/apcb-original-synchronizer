@@ -51,6 +51,8 @@ Chrome拡張機能として導入します。ユーザースクリプトマネ�
 ## 必要な権限
 
 - `storage`: 本家AC記録と引き継ぎデータを拡張機能内に保存
+- `scripting`: 提出iframeのMAIN worldでAceエディターとtextareaへコードを設定
+- `webNavigation`: 同じタブ内の提出iframeを特定してコード設定先に限定
 - `host_permissions`: `https://atcoder.jp/contests/*` のページにスクリプトを実行
 
 本拡張機能はAtCoder以外への情報送信やサーバーへの連続自動アクセスを行いません。
