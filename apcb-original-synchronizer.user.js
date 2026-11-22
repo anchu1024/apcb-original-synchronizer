@@ -524,33 +524,29 @@ function extractLectureProblemUrl() {
 
 function findStatusElement() {
   const candidates = Array.from(document.querySelectorAll(
-    "span.label, span.badge, td.status, th.status, table tbody tr td, table tbody tr th"
+    "span.label, span.badge, td.status, th.status, " +
+    "table tbody tr td, table tbody tr th, #main-container, main"
   ));
-  return candidates.find(element => {
+  const directStatus = candidates.find(element => {
     const text = (element.textContent || "").trim();
-    if (!/^(WJ|Judging|AC|WA|TLE|MLE|RE|CE|OLE|IE)$/i.test(text)) return false;
-    return !!element.querySelector?.("span")
-      || element.className?.toString?.().includes("label")
-      || element.className?.toString?.().includes("badge")
-      || element.className?.toString?.().includes("status")
-      || element.closest("td, th")?.className?.toString?.().includes("status");
-  }) || null;
+    return /^(AC|WJ|Judging|WA|TLE|MLE|RE|CE|OLE|IE)$/i.test(text);
+  });
+  if (directStatus) return directStatus;
+
+  const statusLabels = Array.from(document.querySelectorAll(
+    "span.label, span.badge, .status, [class*='status']"
+  ));
+  return statusLabels.find(element =>
+    /^(AC|WJ|Judging|WA|TLE|MLE|RE|CE|OLE|IE)$/i.test(
+      (element.textContent || "").trim()
+    )
+  ) || null;
 }
 
 function getSubmissionStatus() {
   const statusElement = findStatusElement();
-  const text = (statusElement?.textContent || "").trim().toUpperCase();
   if (!statusElement) return null;
-  if (text === "AC") {
-    const className = (
-      statusElement.className?.toString() +
-      " " +
-      statusElement.parentElement?.className?.toString()
-    ).toLowerCase();
-    const hasAcClass = /label-success|badge-success|status-ac|ac-label|ac-badge/.test(className);
-    if (!hasAcClass && !statusElement.className?.toString?.().includes("label")) return null;
-  }
-  return text;
+  return (statusElement.textContent || "").trim().toUpperCase();
 }
 
 function showSubmissionDuplicate(targetUrl) {
