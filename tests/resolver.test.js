@@ -51,6 +51,15 @@ test("resolves APCB task URLs to original contests", () => {
   );
 });
 
+test("sanitizes known pasted garbage at source boundaries", () => {
+  const scriptWindow = loadScript();
+  const result = scriptWindow.sanitizeSubmissionSource(
+    "123456789101112131415161718192021#include <bits/stdc++.h>\nint main() {}" +
+    "ה".repeat(25) + "X".repeat(25)
+  );
+  assert.equal(result, "#include <bits/stdc++.h>\nint main() {}");
+});
+
 test("rejects non-lecture contests and malformed task IDs", () => {
   const scriptWindow = loadScript();
   assert.equal(
