@@ -1,6 +1,7 @@
 const CONFIG = Object.freeze({
   LECTURE_CONTEST_REGEX: /^apcb_exercise_/,
   PENDING_TRANSFER_TTL_MS: 10 * 60 * 1000,
+  JUDGING_NOTICE_TIMEOUT_MS: 10 * 60 * 1000,
   SUBMITTED_TASKS_KEY: "submitted_tasks",
   PENDING_TRANSFER_KEY: "pending_transfer",
   TRANSFER_QUEUE_KEY: "apcb_transfer_queue",
@@ -1424,6 +1425,19 @@ function selectLanguageOnDocument(doc, select, languageName) {
   select.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
+function submissionRowMatchesTask(row, contestId, taskId) {
+  const taskPath = `/contests/${contestId}/tasks/${taskId}`;
+  const links = Array.from(row.matchAll(/href=["']([^"']+)["']/gi));
+  return links.some(([, href]) => {
+    try {
+      const url = new URL(href, "https://atcoder.jp");
+      return url.pathname.replace(/\/+$/, "") === taskPath;
+    } catch (_) {
+      return false;
+    }
+  });
+}
+
 async function getLatestSubmissionId(targetUrl) {
   const target = new URL(targetUrl);
   const contestId = target.pathname.match(/^\/contests\/([^/]+)\//)?.[1];
@@ -1443,8 +1457,7 @@ async function getLatestSubmissionId(targetUrl) {
   }
   const rows = html.match(/<tr[\s\S]*?<\/tr>/gi) || [];
   const row = rows.find(candidate =>
-    candidate.includes(`/contests/${contestId}/tasks/${taskId}`) ||
-    candidate.includes(`/tasks/${taskId}`)
+    submissionRowMatchesTask(candidate, contestId, taskId)
   );
   return {
     ok: true,
@@ -1463,15 +1476,20 @@ async function pollSubmissionStatus(targetUrl, submissionId) {
   const target = new URL(targetUrl);
   const contestId = target.pathname.match(/^\/contests\/([^/]+)\//)?.[1];
   if (!contestId || !submissionId) return null;
-  const response = await fetch(
-    `https://atcoder.jp/contests/${contestId}/submissions/${submissionId}?_=${Date.now()}`,
-    { credentials: "include" }
-  );
-  if (!response.ok) return null;
-  const html = await response.text();
-  if (/label-success|badge-success|status-ac/i.test(html) && />\s*AC\s*</i.test(html)) return "AC";
-  const match = html.match(/<span[^>]*class=["'][^"']*(?:label|badge|status)[^"']*["'][^>]*>\s*(WJ|Judging|AC|WA|TLE|MLE|RE|CE|OLE|IE)\s*</i);
-  return match?.[1]?.toUpperCase() || null;
+  try {
+    const response = await fetch(
+      `https://atcoder.jp/contests/${contestId}/submissions/${submissionId}?_=${Date.now()}`,
+      { credentials: "include" }
+    );
+    if (!response.ok) return null;
+    const html = await response.text();
+    if (/label-success|badge-success|status-ac/i.test(html) && />\s*AC\s*</i.test(html)) return "AC";
+    const match = html.match(/<span[^>]*class=["'][^"']*(?:label|badge|status)[^"']*["'][^>]*>\s*(WJ|Judging|AC|WA|TLE|MLE|RE|CE|OLE|IE)\s*</i);
+    return match?.[1]?.toUpperCase() || null;
+  } catch (error) {
+    console.error("[APCB] failed to read original submission status", error);
+    return null;
+  }
 }
 
 function showTransferPopup(pending) {
@@ -1566,7 +1584,7 @@ function showTransferPopup(pending) {
         const turnstileInput = form.querySelector("input[name='cf-turnstile-response']");
         if (!turnstileInput || !turnstileInput.value || turnstileInput.value.length <= 20) {
           showTransferPopupStatus("個人認証中...");
-          if (Date.now() >= deadline) {
+          if (Date.now() >= deadline && !challengeRevealed) {
             clearInterval(waitForm);
             showTransferPopupStatus("個人認証を完了できませんでした");
           }
@@ -1575,12 +1593,6 @@ function showTransferPopup(pending) {
         if (challengeRevealTimer) {
           clearTimeout(challengeRevealTimer);
           challengeRevealTimer = null;
-        }
-        if (challengeRevealed) {
-          transferPopupHost.style.cssText =
-            "position:fixed;top:0;right:0;width:1px;height:1px;overflow:hidden;" +
-            "z-index:2147483646;opacity:.01;pointer-events:none;";
-          challengeRevealed = false;
         }
         if (transferPopupSubmitted) return;
         if (!sourceInjectionResult?.success) {
@@ -1731,6 +1743,12 @@ function showTransferPopup(pending) {
               await releaseSubmissionSlot(queueItem.id, submissionOwnerToken);
               submissionSlotAcquired = false;
             }
+            if (challengeRevealed) {
+              transferPopupHost.style.cssText =
+                "position:fixed;top:0;right:0;width:1px;height:1px;overflow:hidden;" +
+                "z-index:2147483646;opacity:.01;pointer-events:none;";
+              challengeRevealed = false;
+            }
             showTransferPopupStatus("提出受付済み。判定待ち...");
           }
           const submitStatus = await pollSubmissionStatus(pending.targetUrl, transferPopupSubmissionId);
@@ -1752,9 +1770,25 @@ function showTransferPopup(pending) {
               setTransferQueue(queue);
             }
           } else if (submitStatus && /^(WJ|JUDGING)$/i.test(submitStatus)) {
-            showTransferPopupStatus("本家で採点中...");
+            if (Date.now() - submittedAt >= CONFIG.JUDGING_NOTICE_TIMEOUT_MS) {
+              clearInterval(pollStatus);
+              showTransferPopupStatus(
+                "本家の採点が長引いています。提出一覧を確認してください",
+                5000
+              );
+            } else {
+              showTransferPopupStatus("本家で採点中...");
+            }
           } else if (!submitStatus) {
-            showTransferPopupStatus("提出受付済み。判定待ち...");
+            if (Date.now() - submittedAt >= CONFIG.JUDGING_NOTICE_TIMEOUT_MS) {
+              clearInterval(pollStatus);
+              showTransferPopupStatus(
+                "本家の判定を取得できません。提出一覧を確認してください",
+                5000
+              );
+            } else {
+              showTransferPopupStatus("提出受付済み。判定待ち...");
+            }
           } else if (submitStatus) {
             clearInterval(pollStatus);
             const queue = getTransferQueue();
@@ -1768,7 +1802,15 @@ function showTransferPopup(pending) {
           }
         } catch (error) {
           console.error("[APCB] submission status check failed", error);
-          showTransferPopupStatus("提出受付済み。判定を確認中...");
+          if (Date.now() - submittedAt >= CONFIG.JUDGING_NOTICE_TIMEOUT_MS) {
+            clearInterval(pollStatus);
+            showTransferPopupStatus(
+              "本家の判定を取得できません。提出一覧を確認してください",
+              5000
+            );
+          } else {
+            showTransferPopupStatus("提出受付済み。判定を確認中...");
+          }
         } finally {
           statusPollInProgress = false;
         }
@@ -1875,6 +1917,7 @@ if (typeof window !== "undefined") {
   window.extractTaskId = extractTaskId;
   window.findStatusElement = findStatusElement;
   window.getSubmissionStatus = getSubmissionStatus;
+  window.pollSubmissionStatus = pollSubmissionStatus;
   window.extractSubmissionCode = extractSubmissionCode;
   window.sanitizeSubmissionSource = sanitizeSubmissionSource;
   window.extractLanguageName = extractLanguageName;
@@ -1886,6 +1929,7 @@ if (typeof window !== "undefined") {
   window.extractLoggedInUsername = extractLoggedInUsername;
   window.extractSubmissionUsername = extractSubmissionUsername;
   window.isOwnSubmissionDetail = isOwnSubmissionDetail;
+  window.submissionRowMatchesTask = submissionRowMatchesTask;
   window.CONFIG = CONFIG;
   const start = () => {
     if (typeof chrome !== "undefined" && chrome.storage?.local) {

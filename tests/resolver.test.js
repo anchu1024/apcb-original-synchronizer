@@ -9,7 +9,7 @@ const source = fs.readFileSync(
   "utf8"
 );
 
-function loadScript() {
+function loadScript(globals = {}) {
   const context = {
     window: {},
     document: {
@@ -27,6 +27,7 @@ function loadScript() {
     setInterval() {},
     setTimeout() {}
   };
+  Object.assign(context, globals);
   context.window.window = context.window;
   vm.runInNewContext(source, context);
   return context.window;
@@ -105,6 +106,8 @@ test("live Turnstile popup submits through a native form", () => {
   assert.match(source, /個人認証中\.\.\./);
   assert.match(source, /本家への受付を確認中\.\.\./);
   assert.match(source, /本家で採点中\.\.\./);
+  assert.match(source, /JUDGING_NOTICE_TIMEOUT_MS: 10 \* 60 \* 1000/);
+  assert.match(source, /本家の採点が長引いています/);
   assert.match(source, /showTransferPopupStatus\("本家ACを確認しました", 5000\)/);
   assert.match(source, /}, 10000\)/);
   assert.match(source, /width:640px/);
@@ -129,6 +132,7 @@ test("live Turnstile popup submits through a native form", () => {
   assert.match(source, /pending\.targetUrl,\s*previousSubmissionId/);
   assert.match(source, /latest\.submissionId === previousSubmissionId/);
   assert.match(source, /turnstileInput\.value\.length <= 20/);
+  assert.match(source, /Date\.now\(\) >= deadline && !challengeRevealed/);
   assert.match(source, /width:640px/);
   assert.match(source, /isExtensionContextValid/);
   assert.match(source, /apcb-transfer-status/);
@@ -153,8 +157,13 @@ test("live Turnstile popup submits through a native form", () => {
     popupSource.indexOf("getLatestSubmissionId(pending.targetUrl)") <
     popupSource.indexOf("form.requestSubmit")
   );
+  assert.ok(
+    popupSource.indexOf("form.requestSubmit") <
+    popupSource.indexOf("if (challengeRevealed)")
+  );
   const receiptIndex = popupSource.indexOf('currentQueueItem.state = "submitted"');
   assert.ok(receiptIndex > popupSource.indexOf("form.requestSubmit"));
+  assert.ok(receiptIndex < popupSource.indexOf("if (challengeRevealed)"));
   assert.ok(
     popupSource.indexOf("releaseSubmissionSlot(queueItem.id", receiptIndex) > receiptIndex
   );
@@ -173,6 +182,33 @@ test("submission detection is limited to the user's submissions list", () => {
   assert.match(source, /extractSubmissionUsername/);
   assert.match(source, /isOwnSubmissionDetail/);
   assert.match(source, /observeSubmissionListColors/);
+});
+
+test("submission rows match the exact contest and task path", () => {
+  const { submissionRowMatchesTask } = loadScript();
+  const exactRow =
+    '<tr><td><a href="/contests/abc469/tasks/abc469_a">A</a></td></tr>';
+  const prefixCollisionRow =
+    '<tr><td><a href="/contests/abc469/tasks/abc469_a_extra">A</a></td></tr>';
+  assert.equal(submissionRowMatchesTask(exactRow, "abc469", "abc469_a"), true);
+  assert.equal(submissionRowMatchesTask(prefixCollisionRow, "abc469", "abc469_a"), false);
+  assert.equal(submissionRowMatchesTask(exactRow, "abc470", "abc469_a"), false);
+});
+
+test("temporary status-fetch failures do not reject the polling promise", async () => {
+  const scriptWindow = loadScript({
+    fetch: async () => {
+      throw new TypeError("Failed to fetch");
+    },
+    console: { error() {} }
+  });
+  assert.equal(
+    await scriptWindow.pollSubmissionStatus(
+      "https://atcoder.jp/contests/abc469/tasks/abc469_a",
+      "12345"
+    ),
+    null
+  );
 });
 
 test("recognizes submission detail and list routes generically", () => {

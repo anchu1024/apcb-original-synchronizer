@@ -111,6 +111,19 @@ async function releaseSubmissionSlotForQueueItem(queueId) {
   }
 }
 
+function submissionRowMatchesTask(row, contestId, taskId) {
+  const taskPath = `/contests/${contestId}/tasks/${taskId}`;
+  const links = Array.from(row.matchAll(/href=["']([^"']+)["']/gi));
+  return links.some(([, href]) => {
+    try {
+      const url = new URL(href, "https://atcoder.jp");
+      return url.pathname.replace(/\/+$/, "") === taskPath;
+    } catch (_) {
+      return false;
+    }
+  });
+}
+
 async function findSubmissionIdFromMe(contestId, taskId, previousSubmissionId) {
   const response = await fetch(
     `https://atcoder.jp/contests/${contestId}/submissions/me?_=${Date.now()}`,
@@ -120,8 +133,7 @@ async function findSubmissionIdFromMe(contestId, taskId, previousSubmissionId) {
   const html = await response.text();
   const rows = html.match(/<tr[\s\S]*?<\/tr>/gi) || [];
   const row = rows.find(candidate =>
-    candidate.includes(`/contests/${contestId}/tasks/${taskId}`) ||
-    candidate.includes(`/tasks/${taskId}`)
+    submissionRowMatchesTask(candidate, contestId, taskId)
   );
   const submissionId = row?.match(/\/submissions\/(\d+)/)?.[1] || null;
   return submissionId && submissionId !== previousSubmissionId ? submissionId : null;
@@ -686,9 +698,15 @@ async function getProblemModels() {
   return models;
 }
 
+function startTransferQueuePolling(source) {
+  pollTransferQueue().catch(error => {
+    console.error(`[APCB] transfer queue poll failed (${source})`, error);
+  });
+}
+
 chrome.storage.onChanged?.addListener((changes, areaName) => {
   if (areaName === "local" && changes.apcb_transfer_queue) {
-    pollTransferQueue();
+    startTransferQueuePolling("storage change");
   }
 });
 chrome.runtime.onInstalled?.addListener(() => {
@@ -698,5 +716,5 @@ chrome.runtime.onStartup?.addListener(() => {
   chrome.alarms.create("apcb-transfer-poll", { periodInMinutes: 1 / 6 });
 });
 chrome.alarms.onAlarm?.addListener(alarm => {
-  if (alarm.name === "apcb-transfer-poll") pollTransferQueue();
+  if (alarm.name === "apcb-transfer-poll") startTransferQueuePolling("alarm");
 });
