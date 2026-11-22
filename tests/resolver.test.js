@@ -115,6 +115,11 @@ test("live Turnstile popup submits through a native form", () => {
   assert.match(source, /function setNativeSourceCodeInPage/);
   assert.match(source, /type: "setNativeSubmitSource"/);
   assert.doesNotMatch(source, /script\.textContent/);
+  assert.match(source, /function findTransferQueueItemForPending/);
+  assert.match(source, /async function persistTransferQueue/);
+  assert.match(source, /queueId: queueItem\.id/);
+  assert.match(source, /queueItem\?\.state === "submitted"/);
+  assert.match(source, /currentQueueItem\.state = "submitted"/);
   assert.match(source, /turnstileInput\.value\.length <= 20/);
   assert.match(source, /width:640px/);
   assert.match(source, /isExtensionContextValid/);
@@ -124,6 +129,14 @@ test("live Turnstile popup submits through a native form", () => {
   assert.match(source, /safeRuntimeSendMessage\(\{ type: "openInTab", url: targetUrl \}\)/);
   assert.match(source, /apcb_transfer_queue/);
   assert.match(source, /renderGlobalQueueStatus/);
+  const popupSource = source.slice(
+    source.indexOf("function showTransferPopup"),
+    source.indexOf("let globalQueueHost")
+  );
+  assert.ok(
+    popupSource.indexOf('currentQueueItem.state = "submitted"') <
+    popupSource.indexOf("form.requestSubmit")
+  );
 });
 
 test("submission detection is limited to the user's submissions list", () => {
@@ -250,6 +263,9 @@ test("AC transfer waits for submission code and language extraction", () => {
   assert.match(source, /function hasAtCoderWorkspaceEditor/);
   assert.match(source, /setWorkspaceStoredCode\(sourceCode, languageName\)/);
   assert.match(source, /setLegacySourceCode\(sourceCode\)/);
+  assert.match(source, /const lectureSubmissionUrl = normalizeAtCoderUrl\(location\.href\)/);
+  assert.match(source, /item\.lectureSubmissionUrl/);
+  assert.match(source, /existingQueueItem\.state === "submitted"/);
 });
 
 test("difficulty correction and official color palette", () => {
