@@ -523,9 +523,34 @@ function extractLectureProblemUrl() {
 }
 
 function findStatusElement() {
-  const statusText = Array.from(document.querySelectorAll("table tbody tr td, table tbody tr th"))
-    .find(element => /^(WJ|Judging|AC|WA|TLE|MLE|RE|CE|OLE|IE)$/i.test((element.textContent || "").trim()));
-  return statusText || null;
+  const candidates = Array.from(document.querySelectorAll(
+    "span.label, span.badge, td.status, th.status, table tbody tr td, table tbody tr th"
+  ));
+  return candidates.find(element => {
+    const text = (element.textContent || "").trim();
+    if (!/^(WJ|Judging|AC|WA|TLE|MLE|RE|CE|OLE|IE)$/i.test(text)) return false;
+    return !!element.querySelector?.("span")
+      || element.className?.toString?.().includes("label")
+      || element.className?.toString?.().includes("badge")
+      || element.className?.toString?.().includes("status")
+      || element.closest("td, th")?.className?.toString?.().includes("status");
+  }) || null;
+}
+
+function getSubmissionStatus() {
+  const statusElement = findStatusElement();
+  const text = (statusElement?.textContent || "").trim().toUpperCase();
+  if (!statusElement) return null;
+  if (text === "AC") {
+    const className = (
+      statusElement.className?.toString() +
+      " " +
+      statusElement.parentElement?.className?.toString()
+    ).toLowerCase();
+    const hasAcClass = /label-success|badge-success|status-ac|ac-label|ac-badge/.test(className);
+    if (!hasAcClass && !statusElement.className?.toString?.().includes("label")) return null;
+  }
+  return text;
 }
 
 function showSubmissionDuplicate(targetUrl) {
@@ -552,8 +577,8 @@ function monitorSubmissionDetail() {
   if (!isOwnSubmissionDetail()) return;
 
   const status = findStatusElement();
-  const text = (status?.textContent || "").trim();
-  if (text !== "AC" && text !== "ac") return;
+  const text = getSubmissionStatus();
+  if (text !== "AC") return;
 
   submissionTransferStarted = true;
   const lectureUrl = extractLectureProblemUrl();
@@ -618,14 +643,14 @@ function monitorSubmissionDetail() {
 }
 
 function waitForStatus() {
-  const initial = findStatusElement();
-  if (initial && /^(AC|WJ|Judging)$/i.test(initial.textContent.trim())) {
+  const initial = getSubmissionStatus();
+  if (initial === "AC") {
     monitorSubmissionDetail();
   }
 
   const observer = new MutationObserver(() => {
-    const status = findStatusElement();
-    if (status && /^(AC|WJ|Judging)$/i.test(status.textContent.trim())) {
+    const status = getSubmissionStatus();
+    if (status === "AC") {
       monitorSubmissionDetail();
     }
   });
@@ -1028,6 +1053,8 @@ if (typeof window !== "undefined") {
   window.normalizeDifficulty = normalizeDifficulty;
   window.getDifficultyColor = getDifficultyColor;
   window.extractTaskId = extractTaskId;
+  window.findStatusElement = findStatusElement;
+  window.getSubmissionStatus = getSubmissionStatus;
   window.extractSubmissionCode = extractSubmissionCode;
   window.sanitizeSubmissionSource = sanitizeSubmissionSource;
   window.extractLanguageName = extractLanguageName;
