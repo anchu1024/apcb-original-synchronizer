@@ -83,7 +83,16 @@ test("task-list badges use isolated row DOM APIs and tbody observation", () => {
   assert.match(source, /observer\.observe\(tbody,/);
   assert.match(source, /#28a745", "important"\)/);
   assert.match(source, /#ffffff", "important"\)/);
+  assert.doesNotMatch(source, /lecture-sync-ac-remove/);
+  assert.doesNotMatch(source, /removeButton/);
   assert.doesNotMatch(source, /td:nth-child/);
+});
+
+test("standings and individual problem difficulty displays are configured", () => {
+  assert.match(source, /standings/);
+  assert.match(source, /a\[href\*='\/tasks\/'\]/);
+  assert.match(source, /circle\.style\.setProperty\("width", "24px", "important"\)/);
+  assert.match(source, /circle\.style\.setProperty\("height", "24px", "important"\)/);
 });
 
 test("submission detection is limited to the user's submissions list", () => {
