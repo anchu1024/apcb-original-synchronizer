@@ -419,6 +419,18 @@ async function extractSubmissionCode() {
     return snapshot;
   };
 
+  const copyTargets = Array.from(document.querySelectorAll(".btn-copy"));
+  for (const copyButton of copyTargets) {
+    const targetId = copyButton.getAttribute("data-target");
+    if (!targetId) continue;
+    const target = document.getElementById(targetId);
+    if (!target) continue;
+    const targetCode = sanitizeSubmissionSource(target.textContent || "");
+    if (!targetCode) continue;
+    analyzeSourcePayload(targetCode, `copy-button data-target#${targetId}`);
+    return targetCode;
+  }
+
   const codeElement = document.querySelector("pre#submission-code");
   if (codeElement) {
     const copyButton = codeElement.parentElement?.querySelector(".btn-copy")
