@@ -1099,32 +1099,7 @@ function isolateTurnstileInIframe(iframeDocument) {
 }
 
 function showOnlyTurnstileContainer(iframeDocument) {
-  const container = isolateTurnstileInIframe(iframeDocument);
-  if (!container) return null;
-
-  const style = iframeDocument.createElement("style");
-  style.textContent =
-    "html,body{margin:0!important;padding:0!important;width:320px!important;height:220px!important;" +
-    "overflow:hidden!important;background:transparent!important}";
-  iframeDocument.head?.append(style);
-
-  const keep = new Set();
-  for (let el = container; el; el = el.parentElement) keep.add(el);
-  iframeDocument.querySelectorAll("body *").forEach(el => {
-    if (!keep.has(el) && !el.contains(container)) {
-      el.style.setProperty("visibility", "hidden", "important");
-      el.style.setProperty("display", "none", "important");
-    }
-  });
-  keep.forEach(el => {
-    el.style.setProperty("visibility", "visible", "important");
-  });
-  container.style.setProperty("visibility", "visible", "important");
-  container.style.setProperty("display", "block", "important");
-  container.style.setProperty("position", "fixed", "important");
-  container.style.setProperty("left", "8px", "important");
-  container.style.setProperty("top", "8px", "important");
-  return container;
+  return isolateTurnstileInIframe(iframeDocument);
 }
 
 function findNativeSubmitForm(iframeDocument) {
@@ -1262,7 +1237,7 @@ function showTransferPopup(pending) {
     transferPopupHost = document.createElement("div");
     transferPopupHost.id = "apcb-transfer-popup";
     transferPopupHost.style.cssText =
-      "position:fixed;top:12px;right:12px;width:640px;height:150px;z-index:2147483647;" +
+      "position:fixed;top:12px;right:12px;width:640px;height:720px;z-index:2147483647;" +
       "background:#fff;border:1px solid #ccc;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.25);";
     document.documentElement.append(transferPopupHost);
   }
@@ -1282,7 +1257,7 @@ function showTransferPopup(pending) {
   const iframe = document.createElement("iframe");
   iframe.src = `https://atcoder.jp/contests/${contestId}/submit?taskScreenName=${encodeURIComponent(taskId)}`;
   iframe.style.cssText =
-    "width:620px;height:90px;border:0;margin:0 8px;display:block;";
+    "width:620px;height:650px;border:0;margin:0 8px;display:block;";
   transferPopupHost.append(iframe);
 
   const status = document.createElement("div");
@@ -1297,7 +1272,6 @@ function showTransferPopup(pending) {
       if (!doc) return;
       const deadline = Date.now() + 60000;
       const waitForm = setInterval(() => {
-        showOnlyTurnstileContainer(doc);
         const form = setNativeSubmitForm(doc, pending);
         if (!form) {
           status.textContent = "提出フォームを読み込み中";
@@ -1306,6 +1280,27 @@ function showTransferPopup(pending) {
         }
         setNativeSourceCode(form, pending.sourceCode);
         const turnstileInput = form.querySelector("input[name='cf-turnstile-response']");
+        const diagnosticWin = doc.defaultView;
+        const aceEditor = typeof diagnosticWin?.ace?.edit === "function"
+          ? diagnosticWin.ace.edit(doc.getElementById("editor"))
+          : null;
+        console.log("[APCB] live submit diagnostics", {
+          url: doc.location?.href,
+          formAction: form.action,
+          sourceTextareaCount: form.querySelectorAll("textarea[name='sourceCode']").length,
+          plainTextarea: !!doc.querySelector("#plain-textarea"),
+          aceValueLength: aceEditor?.getValue?.().length ?? null,
+          aceValueMatches: aceEditor?.getValue?.() === pending.sourceCode,
+          turnstileInputFound: !!turnstileInput,
+          turnstileTokenLength: turnstileInput?.value?.length || 0,
+          turnstileContainers: Array.from(doc.querySelectorAll(
+            ".cf-challenge,.cf-turnstile,[data-sitekey]"
+          )).map(element => ({
+            className: element.className,
+            sitekey: element.dataset.sitekey,
+            rect: element.getBoundingClientRect().toJSON()
+          }))
+        });
         if (!turnstileInput || !turnstileInput.value || turnstileInput.value.length <= 20) {
           status.textContent = "Cloudflare認証を完了してください";
           if (Date.now() >= deadline) clearInterval(waitForm);
