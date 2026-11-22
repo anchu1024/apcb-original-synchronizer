@@ -155,15 +155,6 @@ function applyDifficultyDisplays() {
       const links = Array.from(row.querySelectorAll("a[href*='/tasks/']"));
       if (links.length === 0) return;
 
-      links.forEach(link => {
-        const models = getProblemModels();
-        const taskId = extractTaskId(link.href);
-        const difficulty = normalizeDifficulty(models?.[taskId]?.difficulty);
-        if (difficulty !== null) {
-          link.style.setProperty("color", getDifficultyColor(difficulty), "important");
-        }
-      });
-
       let problemNameLink = links.length >= 2 ? links[1] : links[0];
       const hrefGroups = new Map();
       links.forEach(link => {
