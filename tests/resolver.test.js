@@ -1,10 +1,11 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 
 const source = fs.readFileSync(
-  new URL("../apcb-original-synchronizer.user.js", `file://${__dirname}/`).pathname,
+  path.join(__dirname, "..", "apcb-original-synchronizer.user.js"),
   "utf8"
 );
 
@@ -102,13 +103,16 @@ test("live Turnstile popup submits through a native form", () => {
   assert.match(source, /iframe\.src = `https:\/\/atcoder\.jp\/contests\/\$\{contestId\}\/submit\?taskScreenName=/);
   assert.match(source, /width:640px/);
   assert.match(source, /height:650px/);
-  assert.match(source, /\[APCB\] live submit diagnostics/);
   assert.doesNotMatch(source, /body>\*:not\(#main-container\)/);
   assert.match(source, /cf-turnstile-response/);
   assert.match(source, /form\.requestSubmit/);
   assert.match(source, /submit\(\);/);
-  assert.match(source, /function setNativeSourceCode/);
-  assert.match(source, /win\?\.ace\?\.edit/);
+  assert.match(source, /function setNativeSourceCodeInPage/);
+  assert.match(source, /window\.ace\?\.edit/);
+  assert.match(source, /JSON\.stringify\(sourceCode\)/);
+  assert.match(source, /setTimeout\(applySource, 100\)/);
+  assert.match(source, /aceValueMatches && textareasMatch/);
+  assert.doesNotMatch(source, /diagnosticWin\.ace|win\?\.ace/);
   assert.match(source, /turnstileInput\.value\.length <= 20/);
   assert.match(source, /width:640px/);
   assert.match(source, /isExtensionContextValid/);
@@ -157,7 +161,7 @@ test("recognizes submission detail and list routes generically", () => {
 
 test("Chrome MV3 manifest enables storage and AtCoder content scripts", () => {
   const manifest = JSON.parse(fs.readFileSync(
-    new URL("../manifest.json", `file://${__dirname}/`).pathname,
+    path.join(__dirname, "..", "manifest.json"),
     "utf8"
   ));
   assert.equal(manifest.manifest_version, 3);
@@ -174,7 +178,7 @@ test("Chrome MV3 manifest enables storage and AtCoder content scripts", () => {
 
 test("background keeps and polls the global submission queue", () => {
   const background = fs.readFileSync(
-    new URL("../background.js", `file://${__dirname}/`).pathname,
+    path.join(__dirname, "..", "background.js"),
     "utf8"
   );
   assert.match(background, /apcb_transfer_queue/);
@@ -190,7 +194,7 @@ test("Chrome extension uses storage and validated tab creation", () => {
   assert.match(source, /chrome\.runtime\.sendMessage/);
   assert.doesNotMatch(source, /GM_(getValue|setValue|openInTab)/);
   const background = fs.readFileSync(
-    new URL("../background.js", `file://${__dirname}/`).pathname,
+    path.join(__dirname, "..", "background.js"),
     "utf8"
   );
   assert.match(background, /chrome\.tabs\.create/);
@@ -264,13 +268,13 @@ test("difficulty cache and Chrome MV3 background fetch are configured", () => {
   assert.match(source, /difficulty >= 3200/);
 
   const manifest = JSON.parse(fs.readFileSync(
-    new URL("../manifest.json", `file://${__dirname}/`).pathname,
+    path.join(__dirname, "..", "manifest.json"),
     "utf8"
   ));
   assert.ok(manifest.host_permissions.includes("https://kenkoooo.com/*"));
 
   const background = fs.readFileSync(
-    new URL("../background.js", `file://${__dirname}/`).pathname,
+    path.join(__dirname, "..", "background.js"),
     "utf8"
   );
   assert.match(background, /problem_models_cache/);

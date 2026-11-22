@@ -1132,54 +1132,140 @@ function setNativeSubmitForm(iframeDocument, pending) {
     selectLanguageOnDocument(iframeDocument, languageSelect, pending.languageName);
   }
 
-  setNativeSourceCode(form, pending.sourceCode);
   return form;
 }
 
-function setNativeSourceCode(form, sourceCode) {
-  const textareas = Array.from(form.querySelectorAll(
-    "textarea[name='sourceCode'], textarea[name='source'], textarea#sourceCode, " +
-    "textarea#plain-textarea"
-  ));
+function setNativeSourceCodeInPage(doc, sourceCode) {
+  const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const resultAttribute = `data-apcb-source-result-${requestId}`;
+  const eventName = `apcb-source-result-${requestId}`;
+  const serializedSourceCode = JSON.stringify(sourceCode)
+    .replace(/</g, "\\u003c")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
 
-  let applied = false;
-  textareas.forEach(textarea => {
-    const prototype = Object.getPrototypeOf(textarea);
-    const descriptor = prototype && Object.getOwnPropertyDescriptor(prototype, "value");
-    if (descriptor?.set) {
-      descriptor.set.call(textarea, sourceCode);
-    } else {
-      textarea.value = sourceCode;
-    }
-    ["input", "change", "keyup"].forEach(type => {
-      textarea.dispatchEvent(new Event(type, { bubbles: true }));
-    });
-    applied = applied || textarea.value === sourceCode;
+  return new Promise(resolve => {
+    let finished = false;
+    const cleanup = () => {
+      doc.removeEventListener(eventName, onResult);
+      doc.documentElement?.removeAttribute(resultAttribute);
+      clearTimeout(timeout);
+    };
+    const finish = result => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      resolve(result);
+    };
+    const onResult = () => {
+      const resultText = doc.documentElement?.getAttribute(resultAttribute);
+      if (!resultText) return;
+      try {
+        finish(JSON.parse(resultText));
+      } catch {
+        finish({ success: false });
+      }
+    };
+    const timeout = setTimeout(() => finish({ success: false }), 22000);
+    doc.addEventListener(eventName, onResult);
+
+    const script = doc.createElement("script");
+    script.textContent = `(() => {
+      const sourceCode = ${serializedSourceCode};
+      const resultAttribute = ${JSON.stringify(resultAttribute)};
+      const eventName = ${JSON.stringify(eventName)};
+      const deadline = Date.now() + 20000;
+      let editor = null;
+
+      const finish = result => {
+        document.documentElement.setAttribute(resultAttribute, JSON.stringify(result));
+        document.dispatchEvent(new Event(eventName));
+      };
+
+      const applySource = () => {
+        const form = document.querySelector("form[action*='/submit']");
+        const editorElement = document.getElementById("editor");
+        const textareas = form ? Array.from(form.querySelectorAll(
+          "textarea[name='sourceCode'], textarea[name='source'], textarea#sourceCode, " +
+          "textarea#plain-textarea"
+        )) : [];
+
+        if (!form || !editorElement || !textareas.length ||
+            typeof window.ace?.edit !== "function") {
+          if (Date.now() >= deadline) {
+            finish({
+              success: false,
+              textareaCount: textareas.length,
+              editorAvailable: !!editor,
+              aceAvailable: typeof window.ace?.edit === "function"
+            });
+            return;
+          }
+          setTimeout(applySource, 100);
+          return;
+        }
+
+        try {
+          editor = editor || window.ace.edit(editorElement);
+          if (typeof editor?.setValue !== "function" ||
+              typeof editor?.getValue !== "function") {
+            throw new Error("Ace editor is not ready");
+          }
+        } catch {
+          if (Date.now() >= deadline) {
+            finish({ success: false, textareaCount: textareas.length, editorAvailable: false });
+            return;
+          }
+          setTimeout(applySource, 100);
+          return;
+        }
+
+        if (editor.getValue() !== sourceCode) {
+          editor.setValue(sourceCode, -1);
+        }
+        textareas.forEach(textarea => {
+          if (textarea.value === sourceCode) return;
+          const setter = Object.getOwnPropertyDescriptor(
+            HTMLTextAreaElement.prototype,
+            "value"
+          )?.set;
+          if (setter) setter.call(textarea, sourceCode);
+          else textarea.value = sourceCode;
+          textarea.dispatchEvent(new Event("input", { bubbles: true }));
+          textarea.dispatchEvent(new Event("change", { bubbles: true }));
+        });
+
+        const aceValueMatches = editor.getValue() === sourceCode;
+        const textareasMatch = textareas.every(textarea => textarea.value === sourceCode);
+        if (aceValueMatches && textareasMatch) {
+          finish({
+            success: true,
+            textareaCount: textareas.length,
+            plainTextareaFound: !!form.querySelector("#plain-textarea"),
+            aceValueMatches,
+            textareasMatch
+          });
+          return;
+        }
+
+        if (Date.now() >= deadline) {
+          finish({
+            success: false,
+            textareaCount: textareas.length,
+            plainTextareaFound: !!form.querySelector("#plain-textarea"),
+            aceValueMatches,
+            textareasMatch
+          });
+          return;
+        }
+        setTimeout(applySource, 100);
+      };
+
+      applySource();
+    })();`;
+    (doc.documentElement || doc.head).append(script);
+    script.remove();
   });
-
-  const win = form.ownerDocument.defaultView;
-  if (typeof win?.ace?.edit === "function") {
-    const editorElement = form.ownerDocument.getElementById("editor");
-    if (editorElement) {
-      const aceEditor = win.ace.edit(editorElement);
-      if (typeof aceEditor?.setValue === "function") {
-        aceEditor.setValue(sourceCode, -1);
-        aceEditor.clearSelection?.();
-        aceEditor.moveCursorTo?.(0, 0);
-        applied = applied || aceEditor.getValue?.() === sourceCode;
-      }
-    }
-  }
-  if (typeof win?.jQuery === "function") {
-    win.jQuery(".editor").each((_index, element) => {
-      const editor = win.jQuery(element).data("editor");
-      if (typeof editor?.doc?.setValue === "function") {
-        editor.doc.setValue(sourceCode);
-        applied = true;
-      }
-    });
-  }
-  return applied;
 }
 
 function selectLanguageOnDocument(doc, select, languageName) {
@@ -1271,6 +1357,8 @@ function showTransferPopup(pending) {
       const doc = iframe.contentDocument;
       if (!doc) return;
       const deadline = Date.now() + 60000;
+      let sourceInjectionStarted = false;
+      let sourceInjectionResult = null;
       const waitForm = setInterval(() => {
         const form = setNativeSubmitForm(doc, pending);
         if (!form) {
@@ -1278,48 +1366,30 @@ function showTransferPopup(pending) {
           if (Date.now() >= deadline) clearInterval(waitForm);
           return;
         }
-        setNativeSourceCode(form, pending.sourceCode);
+        if (!sourceInjectionStarted) {
+          sourceInjectionStarted = true;
+          setNativeSourceCodeInPage(doc, pending.sourceCode).then(result => {
+            sourceInjectionResult = result;
+            if (!result.success) status.textContent = "ソースコードを設定できませんでした";
+          }, error => {
+            console.error("[APCB] source injection failed", error);
+            sourceInjectionResult = { success: false };
+            status.textContent = "ソースコードを設定できませんでした";
+          });
+        }
+        if (sourceInjectionResult && !sourceInjectionResult.success) return;
         const turnstileInput = form.querySelector("input[name='cf-turnstile-response']");
-        const diagnosticWin = doc.defaultView;
-        const aceEditor = typeof diagnosticWin?.ace?.edit === "function"
-          ? diagnosticWin.ace.edit(doc.getElementById("editor"))
-          : null;
-        console.log("[APCB] live submit diagnostics", {
-          url: doc.location?.href,
-          formAction: form.action,
-          sourceTextareaCount: form.querySelectorAll("textarea[name='sourceCode']").length,
-          plainTextarea: !!doc.querySelector("#plain-textarea"),
-          aceValueLength: aceEditor?.getValue?.().length ?? null,
-          aceValueMatches: aceEditor?.getValue?.() === pending.sourceCode,
-          turnstileInputFound: !!turnstileInput,
-          turnstileTokenLength: turnstileInput?.value?.length || 0,
-          turnstileContainers: Array.from(doc.querySelectorAll(
-            ".cf-challenge,.cf-turnstile,[data-sitekey]"
-          )).map(element => ({
-            className: element.className,
-            sitekey: element.dataset.sitekey,
-            rect: element.getBoundingClientRect().toJSON()
-          }))
-        });
         if (!turnstileInput || !turnstileInput.value || turnstileInput.value.length <= 20) {
           status.textContent = "Cloudflare認証を完了してください";
           if (Date.now() >= deadline) clearInterval(waitForm);
           return;
         }
         if (transferPopupSubmitted) return;
-        const sourceApplied = setNativeSourceCode(form, pending.sourceCode);
-        const win = doc.defaultView;
-        const aceValue = typeof win?.ace?.edit === "function"
-          ? win.ace.edit(doc.getElementById("editor"))?.getValue?.()
-          : null;
-        const sourceTextarea = form.querySelector(
-          "textarea[name='sourceCode'], textarea[name='source'], textarea#sourceCode, textarea#plain-textarea"
-        );
-        const sourceValue = aceValue ?? sourceTextarea?.value ?? "";
-        if (!sourceApplied || sourceValue.length === 0 || sourceValue !== pending.sourceCode) {
-          status.textContent = "ソースコードを設定できませんでした";
+        if (!sourceInjectionResult?.success) {
+          status.textContent = "ソースコードを設定しています";
           return;
         }
+        console.log("[APCB] source injection verified", sourceInjectionResult);
         transferPopupSubmitted = true;
         clearInterval(waitForm);
         status.textContent = "提出しています";
