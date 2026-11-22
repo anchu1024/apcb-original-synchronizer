@@ -297,4 +297,12 @@ chrome.storage.onChanged?.addListener((changes, areaName) => {
     pollTransferQueue();
   }
 });
-setInterval(pollTransferQueue, 10000);
+chrome.runtime.onInstalled?.addListener(() => {
+  chrome.alarms.create("apcb-transfer-poll", { periodInMinutes: 1 / 6 });
+});
+chrome.runtime.onStartup?.addListener(() => {
+  chrome.alarms.create("apcb-transfer-poll", { periodInMinutes: 1 / 6 });
+});
+chrome.alarms.onAlarm?.addListener(alarm => {
+  if (alarm.name === "apcb-transfer-poll") pollTransferQueue();
+});
