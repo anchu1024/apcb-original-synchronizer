@@ -3,6 +3,7 @@ const CONFIG = Object.freeze({
   PENDING_TRANSFER_TTL_MS: 10 * 60 * 1000,
   SUBMITTED_TASKS_KEY: "submitted_tasks",
   PENDING_TRANSFER_KEY: "pending_transfer",
+  TRANSFER_QUEUE_KEY: "apcb_transfer_queue",
   PROBLEM_MODELS_CACHE_KEY: "problem_models_cache",
   PROBLEM_MODELS_URL: "https://kenkoooo.com/atcoder/resources/problem-models.json",
   PROBLEM_MODELS_TTL_MS: 24 * 60 * 60 * 1000
@@ -11,6 +12,7 @@ const CONFIG = Object.freeze({
 let chromeStorageCache = {
   submitted_tasks: {},
   pending_transfer: null,
+  apcb_transfer_queue: [],
   problem_models_cache: null
 };
 
@@ -263,6 +265,15 @@ function getSubmittedTasks() {
 
 function setSubmittedTasks(value) {
   gmSetValue(CONFIG.SUBMITTED_TASKS_KEY, value);
+}
+
+function getTransferQueue() {
+  const value = gmGetValue(CONFIG.TRANSFER_QUEUE_KEY, []);
+  return Array.isArray(value) ? value : [];
+}
+
+function setTransferQueue(queue) {
+  gmSetValue(CONFIG.TRANSFER_QUEUE_KEY, queue);
 }
 
 function getPendingTransfer() {
@@ -635,10 +646,25 @@ function monitorSubmissionDetail() {
         sourceCode,
         createdAt: Date.now()
       });
+      const queue = getTransferQueue();
+      const queueItem = {
+        id: `${normalizedTarget}#${Date.now()}`,
+        state: "ready",
+        targetUrl: normalizedTarget,
+        lectureUrl: normalizeAtCoderUrl(lectureUrl),
+        languageName,
+        sourceCode,
+        createdAt: Date.now(),
+        notificationClaimed: false
+      };
+      queue.unshift(queueItem);
+      setTransferQueue(queue.slice(0, 20));
       showTransferPopup({
         targetUrl: normalizedTarget,
         languageName,
-        sourceCode
+        sourceCode,
+        queueId: queueItem.id,
+        lectureUrl: normalizeAtCoderUrl(lectureUrl)
       });
       return;
     }
@@ -1055,8 +1081,9 @@ function showOnlyTurnstileContainer(iframeDocument) {
     "html,body{margin:0!important;padding:0!important;width:320px!important;height:220px!important;" +
     "overflow:hidden!important;background:transparent!important}" +
     "body *{visibility:hidden!important}" +
-    ".cf-challenge,.cf-turnstile,[data-sitekey]{visibility:visible!important;" +
-    "display:block!important;position:fixed!important;left:8px!important;top:8px!important;" +
+    ".cf-challenge,.cf-turnstile,[data-sitekey],.cf-challenge iframe,.cf-turnstile iframe," +
+    "[data-sitekey] iframe{visibility:visible!important;display:block!important;" +
+    "position:fixed!important;left:8px!important;top:8px!important;" +
     "z-index:2147483647!important}";
   iframeDocument.head?.append(style);
 
@@ -1189,7 +1216,7 @@ function showTransferPopup(pending) {
   if (!contestId || !taskId) return;
 
   const iframe = document.createElement("iframe");
-  iframe.src = `https://atcoder.jp/contests/${contestId}/submit?taskScreenName=${encodeURIComponent(taskId)}`;
+  iframe.src = `https://atcoder.jp/contests/${contestId}/tasks/${encodeURIComponent(taskId)}`;
   iframe.style.cssText =
     "width:320px;height:220px;border:0;margin:0 8px;display:block;";
   transferPopupHost.append(iframe);
@@ -1246,6 +1273,13 @@ function showTransferPopup(pending) {
           form.submit();
         }
         submittedAt = Date.now();
+        const queue = getTransferQueue();
+        const queueItem = queue.find(item => item.id === pending.queueId);
+        if (queueItem) {
+          queueItem.state = "submitted";
+          queueItem.submittedAt = submittedAt;
+          setTransferQueue(queue);
+        }
       }, 250);
 
       const pollStatus = setInterval(async () => {
@@ -1254,6 +1288,12 @@ function showTransferPopup(pending) {
         if (!transferPopupSubmissionId) {
           transferPopupSubmissionId = await findSubmissionId(pending.targetUrl);
           if (!transferPopupSubmissionId) return;
+          const queue = getTransferQueue();
+          const queueItem = queue.find(item => item.id === pending.queueId);
+          if (queueItem) {
+            queueItem.submissionId = transferPopupSubmissionId;
+            setTransferQueue(queue);
+          }
         }
         const submitStatus = await pollSubmissionStatus(pending.targetUrl, transferPopupSubmissionId);
         if (submitStatus === "AC") {
@@ -1266,6 +1306,13 @@ function showTransferPopup(pending) {
             lectureUrl: pending.lectureUrl || ""
           };
           setSubmittedTasks(submitted);
+          const queue = getTransferQueue();
+          const queueItem = queue.find(item => item.id === pending.queueId);
+          if (queueItem) {
+            queueItem.state = "ac";
+            queueItem.notificationClaimed = false;
+            setTransferQueue(queue);
+          }
         } else if (submitStatus) {
           status.textContent = `本家判定: ${submitStatus}`;
         }
@@ -1274,6 +1321,35 @@ function showTransferPopup(pending) {
       status.textContent = "提出ページの読み込みに失敗しました";
     }
   });
+}
+
+let globalQueueHost = null;
+function renderGlobalQueueStatus() {
+  if (!isLectureContestUrl(location.href)) return;
+  const queue = getTransferQueue();
+  const acItems = queue.filter(item =>
+    item.state === "ac" && !item.notificationClaimed
+  );
+  if (acItems.length === 0) return;
+
+  acItems.forEach(item => {
+    item.notificationClaimed = true;
+  });
+  setTransferQueue(queue);
+
+  if (!globalQueueHost) {
+    globalQueueHost = document.createElement("div");
+    globalQueueHost.id = "apcb-transfer-global-status";
+    globalQueueHost.style.cssText =
+      "position:fixed;bottom:12px;right:12px;width:320px;z-index:2147483646;" +
+      "background:#fff;border:1px solid #28a745;border-radius:8px;" +
+      "box-shadow:0 4px 16px rgba(0,0,0,.25);padding:10px;font:13px sans-serif;";
+    document.documentElement.append(globalQueueHost);
+  }
+  globalQueueHost.textContent =
+    acItems.map(item =>
+      `${item.targetUrl?.split("/").pop() || "問題"}: 本家ACを確認しました`
+    ).join("\n");
 }
 
 function main() {
@@ -1298,6 +1374,13 @@ function main() {
   if (isLectureContestUrl(location.href)) {
     const pending = getPendingTransfer();
     if (pending) showTransferPopup(pending);
+    renderGlobalQueueStatus();
+    if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+      chrome.runtime.sendMessage({ type: "pollTransferQueue" });
+      setInterval(() => {
+        chrome.runtime.sendMessage({ type: "pollTransferQueue" });
+      }, 10000);
+    }
   }
   if (/\/standings\/?$/.test(pathname)) {
     applyDifficultyDisplays();
@@ -1349,6 +1432,7 @@ if (typeof window !== "undefined") {
         [
           CONFIG.SUBMITTED_TASKS_KEY,
           CONFIG.PENDING_TRANSFER_KEY,
+          CONFIG.TRANSFER_QUEUE_KEY,
           CONFIG.PROBLEM_MODELS_CACHE_KEY
         ],
         values => {
@@ -1357,6 +1441,8 @@ if (typeof window !== "undefined") {
               values[CONFIG.SUBMITTED_TASKS_KEY] || {},
             pending_transfer:
               values[CONFIG.PENDING_TRANSFER_KEY] || null,
+            apcb_transfer_queue:
+              values[CONFIG.TRANSFER_QUEUE_KEY] || [],
             problem_models_cache:
               values[CONFIG.PROBLEM_MODELS_CACHE_KEY] || null
           };
@@ -1370,6 +1456,11 @@ if (typeof window !== "undefined") {
               if (changes.pending_transfer) {
                 chromeStorageCache.pending_transfer =
                   changes.pending_transfer.newValue || null;
+              }
+              if (changes.apcb_transfer_queue) {
+                chromeStorageCache.apcb_transfer_queue =
+                  changes.apcb_transfer_queue.newValue || [];
+                renderGlobalQueueStatus();
               }
               if (changes.problem_models_cache) {
                 chromeStorageCache.problem_models_cache =
