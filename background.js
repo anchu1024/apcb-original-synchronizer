@@ -1,4 +1,97 @@
+async function getQueue() {
+  const result = await chrome.storage.local.get("apcb_transfer_queue");
+  return Array.isArray(result.apcb_transfer_queue) ? result.apcb_transfer_queue : [];
+}
+
+async function setQueue(queue) {
+  await chrome.storage.local.set({ apcb_transfer_queue: queue });
+}
+
+async function findSubmissionIdFromMe(contestId, taskId) {
+  const response = await fetch(
+    `https://atcoder.jp/contests/${contestId}/submissions/me?_=${Date.now()}`,
+    { credentials: "include" }
+  );
+  if (!response.ok) return null;
+  const html = await response.text();
+  const rows = html.match(/<tr[\s\S]*?<\/tr>/gi) || [];
+  const row = rows.find(candidate =>
+    candidate.includes(`/contests/${contestId}/tasks/${taskId}`) ||
+    candidate.includes(`/tasks/${taskId}`)
+  );
+  return row?.match(/\/submissions\/(\d+)/)?.[1] || null;
+}
+
+async function getSubmissionStatus(contestId, submissionId) {
+  const response = await fetch(
+    `https://atcoder.jp/contests/${contestId}/submissions/${submissionId}?_=${Date.now()}`,
+    { credentials: "include" }
+  );
+  if (!response.ok) return null;
+  const html = await response.text();
+  if (/label-success|badge-success|status-ac/i.test(html) && />\s*AC\s*</i.test(html)) return "AC";
+  const match = html.match(/<span[^>]*class=["'][^"']*(?:label|badge|status)[^"']*["'][^>]*>\s*(WJ|Judging|AC|WA|TLE|MLE|RE|CE|OLE|IE)\s*</i);
+  return match?.[1]?.toUpperCase() || null;
+}
+
+async function pollTransferQueue() {
+  const queue = await getQueue();
+  let changed = false;
+  for (const item of queue) {
+    if (item.state !== "submitted") continue;
+    try {
+      const target = new URL(item.targetUrl);
+      const contestId = target.pathname.match(/^\/contests\/([^/]+)\//)?.[1];
+      const taskId = decodeURIComponent(target.pathname.match(/\/tasks\/([^/?#]+)/)?.[1] || "");
+      if (!contestId) continue;
+      if (!item.submissionId) {
+        item.submissionId = await findSubmissionIdFromMe(contestId, taskId);
+        changed = true;
+      }
+      if (!item.submissionId) continue;
+      const status = await getSubmissionStatus(contestId, item.submissionId);
+      if (status === "AC") {
+        item.state = "ac";
+        item.notificationClaimed = false;
+        changed = true;
+        const stored = await chrome.storage.local.get("submitted_tasks");
+        const submitted = stored.submitted_tasks && typeof stored.submitted_tasks === "object"
+          ? stored.submitted_tasks
+          : {};
+        submitted[normalizeQueueUrl(item.targetUrl)] = {
+          status: "AC",
+          timestamp: Date.now(),
+          lectureUrl: item.lectureUrl || "",
+          submissionId: item.submissionId
+        };
+        await chrome.storage.local.set({ submitted_tasks: submitted });
+      } else if (status && !/^(WJ|JUDGING)$/i.test(status)) {
+        item.state = "finished";
+        item.status = status;
+        changed = true;
+      }
+    } catch (_) {}
+  }
+  if (changed) await setQueue(queue);
+}
+
+function normalizeQueueUrl(url) {
+  try {
+    const parsed = new URL(url);
+    parsed.search = "";
+    parsed.hash = "";
+    parsed.pathname = parsed.pathname.replace(/\/+$/, "") || "/";
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch (_) {
+    return String(url || "").split(/[?#]/)[0].replace(/\/+$/, "");
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "pollTransferQueue") {
+    pollTransferQueue().then(() => sendResponse({ ok: true }));
+    return true;
+  }
   if (message?.type === "setAtCoderSource" && typeof message.sourceCode === "string") {
     if (!sender.tab?.id) {
       sendResponse({ ok: false });
@@ -198,3 +291,10 @@ async function getProblemModels() {
   });
   return models;
 }
+
+chrome.storage.onChanged?.addListener((changes, areaName) => {
+  if (areaName === "local" && changes.apcb_transfer_queue) {
+    pollTransferQueue();
+  }
+});
+setInterval(pollTransferQueue, 10000);

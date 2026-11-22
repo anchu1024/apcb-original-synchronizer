@@ -99,7 +99,7 @@ test("standings and individual problem difficulty displays are configured", () =
 
 test("live Turnstile popup submits through a native form", () => {
   assert.match(source, /function showTransferPopup/);
-  assert.match(source, /iframe\.src = `https:\/\/atcoder\.jp\/contests\/\$\{contestId\}\/submit\?taskScreenName=/);
+  assert.match(source, /iframe\.src = `https:\/\/atcoder\.jp\/contests\/\$\{contestId\}\/tasks\/\$\{encodeURIComponent\(taskId\)\}`/);
   assert.match(source, /cf-turnstile-response/);
   assert.match(source, /form\.requestSubmit/);
   assert.match(source, /submit\(\);/);
@@ -109,6 +109,8 @@ test("live Turnstile popup submits through a native form", () => {
   assert.match(source, /document\.addEventListener\("click", event =>/);
   assert.match(source, /event\.altKey/);
   assert.match(source, /chrome\.runtime\.sendMessage\(\{ type: "openInTab", url: targetUrl \}\)/);
+  assert.match(source, /apcb_transfer_queue/);
+  assert.match(source, /renderGlobalQueueStatus/);
 });
 
 test("submission detection is limited to the user's submissions list", () => {
@@ -161,6 +163,18 @@ test("Chrome MV3 manifest enables storage and AtCoder content scripts", () => {
     manifest.content_scripts[0].js[0],
     "apcb-original-synchronizer.user.js"
   );
+});
+
+test("background keeps and polls the global submission queue", () => {
+  const background = fs.readFileSync(
+    new URL("../background.js", `file://${__dirname}/`).pathname,
+    "utf8"
+  );
+  assert.match(background, /apcb_transfer_queue/);
+  assert.match(background, /pollTransferQueue/);
+  assert.match(background, /submissions\/me/);
+  assert.match(background, /notificationClaimed/);
+  assert.match(background, /setInterval\(pollTransferQueue, 10000\)/);
 });
 
 test("Chrome extension uses storage and validated tab creation", () => {
