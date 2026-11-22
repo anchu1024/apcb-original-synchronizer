@@ -28,10 +28,6 @@ function isExtensionContextValid() {
 }
 
 function safeRuntimeSendMessage(message, callback) {
-  if (!isExtensionContextValid()) {
-    callback?.({ ok: false, error: "Extension context invalidated" });
-    return;
-  }
   try {
     chrome.runtime.sendMessage(message, response => {
       const error = chrome.runtime?.lastError?.message;
@@ -898,8 +894,8 @@ function setSourceCode(sourceCode, languageName) {
   };
   logSourcePayload("before insertion");
   const sendAtCoderSource = () => {
-    if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
-      chrome.runtime.sendMessage({
+    if (isExtensionContextValid()) {
+      safeRuntimeSendMessage({
         type: "setAtCoderSource",
         sourceCode
       }, response => {
@@ -915,8 +911,8 @@ function setSourceCode(sourceCode, languageName) {
   if (hasAtCoderWorkspaceEditor()) {
     setWorkspaceStoredCode(sourceCode, languageName);
     const sendWorkspaceCode = () => {
-      if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
-        chrome.runtime.sendMessage({
+      if (isExtensionContextValid()) {
+        safeRuntimeSendMessage({
           type: "setWorkspaceCode",
           sourceCode
         });
@@ -1537,8 +1533,8 @@ if (typeof window !== "undefined") {
             });
           }
           main();
-          if (!getProblemModels() && chrome.runtime?.sendMessage) {
-            chrome.runtime.sendMessage(
+          if (!getProblemModels() && isExtensionContextValid()) {
+            safeRuntimeSendMessage(
               { type: "getProblemModels" },
               response => {
                 if (response?.ok && response.models) {
