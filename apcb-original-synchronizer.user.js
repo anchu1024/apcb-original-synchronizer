@@ -211,6 +211,22 @@ function applyDifficultyDisplays() {
         if (circle !== title.previousElementSibling) {
           title.insertAdjacentElement("beforebegin", circle);
         }
+        if (title.dataset.apcbOriginalLink !== "true") {
+          const targetUrl = resolveOriginalTaskUrl(location.href);
+          if (targetUrl) {
+            const originalLink = document.createElement("a");
+            originalLink.textContent = "本家を開く";
+            originalLink.href = targetUrl;
+            originalLink.target = "_blank";
+            originalLink.rel = "noopener";
+            originalLink.style.setProperty("display", "inline-block", "important");
+            originalLink.style.setProperty("margin-left", "8px", "important");
+            originalLink.style.setProperty("font-size", "14px", "important");
+            originalLink.style.setProperty("font-weight", "normal", "important");
+            title.insertAdjacentElement("afterend", originalLink);
+            title.dataset.apcbOriginalLink = "true";
+          }
+        }
       });
     }
   }
@@ -619,12 +635,11 @@ function monitorSubmissionDetail() {
         sourceCode,
         createdAt: Date.now()
       });
-
-      if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
-        chrome.runtime.sendMessage({ type: "openInTab", url: normalizedTarget });
-      } else {
-        window.open(normalizedTarget, "_blank");
-      }
+      showTransferPopup({
+        targetUrl: normalizedTarget,
+        languageName,
+        sourceCode
+      });
       return;
     }
 
@@ -1012,9 +1027,243 @@ function observeSubmissionListColors() {
   setInterval(applyDifficultyDisplays, 1000);
 }
 
+let transferPopupHost = null;
+let transferPopupSubmitted = false;
+let transferPopupSubmissionId = null;
+
+function isolateTurnstileInIframe(iframeDocument) {
+  if (!iframeDocument) return null;
+  const container = iframeDocument.querySelector(
+    ".cf-challenge[data-sitekey], .cf-turnstile[data-sitekey], " +
+    "[data-sitekey] input[name='cf-turnstile-response']"
+  );
+  if (!container) {
+    const input = iframeDocument.querySelector("input[name='cf-turnstile-response']");
+    return input?.closest("form")?.querySelector(
+      ".cf-challenge, .cf-turnstile, [data-sitekey]"
+    ) || null;
+  }
+  return container;
+}
+
+function showOnlyTurnstileContainer(iframeDocument) {
+  const container = isolateTurnstileInIframe(iframeDocument);
+  if (!container) return null;
+
+  const style = iframeDocument.createElement("style");
+  style.textContent =
+    "html,body{margin:0!important;padding:0!important;width:320px!important;height:220px!important;" +
+    "overflow:hidden!important;background:transparent!important}" +
+    "body *{visibility:hidden!important}" +
+    ".cf-challenge,.cf-turnstile,[data-sitekey]{visibility:visible!important;" +
+    "display:block!important;position:fixed!important;left:8px!important;top:8px!important;" +
+    "z-index:2147483647!important}";
+  iframeDocument.head?.append(style);
+
+  let ancestor = container;
+  while (ancestor && ancestor !== iframeDocument.body) {
+    ancestor.style.setProperty("visibility", "visible", "important");
+    ancestor.style.setProperty("display", "block", "important");
+    ancestor = ancestor.parentElement;
+  }
+  container.style.setProperty("visibility", "visible", "important");
+  container.style.setProperty("display", "block", "important");
+  return container;
+}
+
+function findNativeSubmitForm(iframeDocument) {
+  return iframeDocument?.querySelector("form[action*='/submit']")
+    || iframeDocument?.querySelector("form");
+}
+
+function setNativeSubmitForm(iframeDocument, pending) {
+  const form = findNativeSubmitForm(iframeDocument);
+  if (!form) return null;
+
+  const taskInput = form.querySelector("input[name='data.TaskScreenName']");
+  if (taskInput) {
+    const taskMatch = new URL(pending.targetUrl).pathname.match(/\/tasks\/([^/?#]+)/);
+    if (taskMatch) taskInput.value = decodeURIComponent(taskMatch[1]);
+  }
+
+  const select = form.querySelector("select[name='data.LanguageId']");
+  if (select && pending.languageName) selectLanguageOnDocument(iframeDocument, select, pending.languageName);
+
+  const textarea = form.querySelector("textarea[name='sourceCode']");
+  if (textarea) textarea.value = pending.sourceCode;
+  return form;
+}
+
+function selectLanguageOnDocument(doc, select, languageName) {
+  const wanted = (languageName || "").trim().replace(/\s+/g, " ").toLowerCase();
+  const options = Array.from(select.options);
+  const exact = options.find(option =>
+    (option.textContent || "").trim().replace(/\s+/g, " ").toLowerCase() === wanted
+  );
+  const prefix = options.find(option => {
+    const text = (option.textContent || "").trim().replace(/\s+/g, " ").toLowerCase();
+    return text.startsWith(wanted) || wanted.startsWith(text);
+  });
+  const selected = exact || prefix;
+  if (!selected) return;
+  select.value = selected.value;
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+async function findSubmissionId(targetUrl) {
+  const target = new URL(targetUrl);
+  const contestId = target.pathname.match(/^\/contests\/([^/]+)\//)?.[1];
+  const taskId = decodeURIComponent(target.pathname.match(/\/tasks\/([^/?#]+)/)?.[1] || "");
+  if (!contestId) return null;
+  const response = await fetch(
+    `https://atcoder.jp/contests/${contestId}/submissions/me?_=${Date.now()}`,
+    { credentials: "include" }
+  );
+  if (!response.ok) return null;
+  const html = await response.text();
+  const rows = html.match(/<tr[\s\S]*?<\/tr>/gi) || [];
+  const row = rows.find(candidate =>
+    candidate.includes(`/contests/${contestId}/tasks/${taskId}`) ||
+    candidate.includes(`/tasks/${taskId}`)
+  );
+  return row?.match(/\/submissions\/(\d+)/)?.[1] || null;
+}
+
+async function pollSubmissionStatus(targetUrl, submissionId) {
+  const target = new URL(targetUrl);
+  const contestId = target.pathname.match(/^\/contests\/([^/]+)\//)?.[1];
+  if (!contestId || !submissionId) return null;
+  const response = await fetch(
+    `https://atcoder.jp/contests/${contestId}/submissions/${submissionId}?_=${Date.now()}`,
+    { credentials: "include" }
+  );
+  if (!response.ok) return null;
+  const html = await response.text();
+  if (/label-success|badge-success|status-ac/i.test(html) && />\s*AC\s*</i.test(html)) return "AC";
+  const match = html.match(/<span[^>]*class=["'][^"']*(?:label|badge|status)[^"']*["'][^>]*>\s*(WJ|Judging|AC|WA|TLE|MLE|RE|CE|OLE|IE)\s*</i);
+  return match?.[1]?.toUpperCase() || null;
+}
+
+function showTransferPopup(pending) {
+  if (!transferPopupHost) {
+    transferPopupHost = document.createElement("div");
+    transferPopupHost.id = "apcb-transfer-popup";
+    transferPopupHost.style.cssText =
+      "position:fixed;top:12px;right:12px;width:336px;height:246px;z-index:2147483647;" +
+      "background:#fff;border:1px solid #ccc;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.25);";
+    document.documentElement.append(transferPopupHost);
+  }
+  transferPopupHost.replaceChildren();
+  transferPopupSubmitted = false;
+
+  const title = document.createElement("div");
+  title.textContent = "本家にも送信";
+  title.style.cssText = "height:26px;padding:8px 10px 0;font-weight:bold;font-size:13px;";
+  transferPopupHost.append(title);
+
+  const target = new URL(pending.targetUrl);
+  const contestId = target.pathname.match(/^\/contests\/([^/]+)\//)?.[1];
+  const taskId = decodeURIComponent(target.pathname.match(/\/tasks\/([^/?#]+)/)?.[1] || "");
+  if (!contestId || !taskId) return;
+
+  const iframe = document.createElement("iframe");
+  iframe.src = `https://atcoder.jp/contests/${contestId}/submit?taskScreenName=${encodeURIComponent(taskId)}`;
+  iframe.style.cssText =
+    "width:320px;height:220px;border:0;margin:0 8px;display:block;";
+  transferPopupHost.append(iframe);
+
+  const status = document.createElement("div");
+  status.textContent = "Cloudflare認証を待っています";
+  status.style.cssText = "position:absolute;left:10px;bottom:-28px;color:#333;font-size:12px;";
+  transferPopupHost.append(status);
+
+  let submittedAt = 0;
+  iframe.addEventListener("load", () => {
+    try {
+      const doc = iframe.contentDocument;
+      if (!doc) return;
+      showOnlyTurnstileContainer(doc);
+      const form = setNativeSubmitForm(doc, pending);
+      if (!form) {
+        status.textContent = "提出フォームを読み込み中";
+        return;
+      }
+
+      const deadline = Date.now() + 60000;
+      const waitToken = setInterval(() => {
+        const turnstileInput = form.querySelector("input[name='cf-turnstile-response']");
+        const tokenReady = !turnstileInput
+          || (turnstileInput.value && turnstileInput.value.length > 20);
+        if (!tokenReady && Date.now() < deadline) return;
+        if (!tokenReady) {
+          status.textContent = "Cloudflare認証を完了してください";
+          clearInterval(waitToken);
+          return;
+        }
+        if (transferPopupSubmitted) return;
+        transferPopupSubmitted = true;
+        clearInterval(waitToken);
+        status.textContent = "提出しています";
+        const submitButton = form.querySelector("button[type='submit'], input[type='submit']");
+        if (typeof form.requestSubmit === "function") {
+          submitButton ? form.requestSubmit(submitButton) : form.requestSubmit();
+        } else {
+          form.submit();
+        }
+        submittedAt = Date.now();
+      }, 250);
+
+      const pollStatus = setInterval(async () => {
+        if (!submittedAt) return;
+        if (Date.now() - submittedAt < 3000) return;
+        if (!transferPopupSubmissionId) {
+          transferPopupSubmissionId = await findSubmissionId(pending.targetUrl);
+          if (!transferPopupSubmissionId) return;
+        }
+        const submitStatus = await pollSubmissionStatus(pending.targetUrl, transferPopupSubmissionId);
+        if (submitStatus === "AC") {
+          clearInterval(pollStatus);
+          status.textContent = "本家ACを確認しました";
+          const submitted = getSubmittedTasks();
+          submitted[normalizeAtCoderUrl(pending.targetUrl)] = {
+            status: "AC",
+            timestamp: Date.now(),
+            lectureUrl: pending.lectureUrl || ""
+          };
+          setSubmittedTasks(submitted);
+        } else if (submitStatus) {
+          status.textContent = `本家判定: ${submitStatus}`;
+        }
+      }, 3000);
+    } catch (error) {
+      status.textContent = "提出ページの読み込みに失敗しました";
+    }
+  });
+}
+
 function main() {
   if (typeof document === "undefined" || typeof location === "undefined") return;
   const pathname = new URL(location.href).pathname;
+  document.addEventListener("click", event => {
+    if (!event.altKey) return;
+    const link = event.target?.closest?.("a[href*='/tasks/']");
+    if (!link) return;
+    if (!isLectureContestUrl(location.href)) return;
+    const targetUrl = resolveOriginalTaskUrl(link.href);
+    if (!targetUrl) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+      chrome.runtime.sendMessage({ type: "openInTab", url: targetUrl });
+    } else {
+      window.open(targetUrl, "_blank");
+    }
+  }, true);
+
+  if (isLectureContestUrl(location.href)) {
+    const pending = getPendingTransfer();
+    if (pending) showTransferPopup(pending);
+  }
   if (/\/standings\/?$/.test(pathname)) {
     applyDifficultyDisplays();
     const observer = new MutationObserver(applyDifficultyDisplays);
@@ -1038,10 +1287,6 @@ function main() {
     setInterval(applyDifficultyDisplays, 1000);
   }
 
-  const contestPath = new URL(location.href).pathname.match(/^\/contests\/([^/]+)/);
-  if (contestPath && !CONFIG.LECTURE_CONTEST_REGEX.test(contestPath[1])) {
-    processOriginalTaskPage();
-  }
 }
 
 if (typeof window !== "undefined") {

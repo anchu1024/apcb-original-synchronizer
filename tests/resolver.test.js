@@ -93,6 +93,20 @@ test("standings and individual problem difficulty displays are configured", () =
   assert.match(source, /a\[href\*='\/tasks\/'\]/);
   assert.match(source, /circle\.style\.setProperty\("width", "24px", "important"\)/);
   assert.match(source, /circle\.style\.setProperty\("height", "24px", "important"\)/);
+  assert.match(source, /本家を開く/);
+  assert.match(source, /insertAdjacentElement\("afterend", originalLink\)/);
+});
+
+test("live Turnstile popup submits through a native form", () => {
+  assert.match(source, /function showTransferPopup/);
+  assert.match(source, /iframe\.src = `https:\/\/atcoder\.jp\/contests\/\$\{contestId\}\/submit\?taskScreenName=/);
+  assert.match(source, /cf-turnstile-response/);
+  assert.match(source, /form\.requestSubmit/);
+  assert.match(source, /submit\(\);/);
+  assert.match(source, /本家にも送信/);
+  assert.match(source, /document\.addEventListener\("click", event =>/);
+  assert.match(source, /event\.altKey/);
+  assert.match(source, /chrome\.runtime\.sendMessage\(\{ type: "openInTab", url: targetUrl \}\)/);
 });
 
 test("submission detection is limited to the user's submissions list", () => {
