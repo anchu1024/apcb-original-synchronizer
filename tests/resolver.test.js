@@ -106,10 +106,12 @@ test("live Turnstile popup submits through a native form", () => {
   assert.match(source, /function setNativeSourceCode/);
   assert.match(source, /win\?\.ace\?\.edit/);
   assert.match(source, /turnstileInput\.value\.length <= 20/);
+  assert.match(source, /width:640px/);
+  assert.match(source, /isExtensionContextValid/);
   assert.match(source, /本家にも送信/);
   assert.match(source, /document\.addEventListener\("click", event =>/);
   assert.match(source, /event\.altKey/);
-  assert.match(source, /chrome\.runtime\.sendMessage\(\{ type: "openInTab", url: targetUrl \}\)/);
+  assert.match(source, /safeRuntimeSendMessage\(\{ type: "openInTab", url: targetUrl \}\)/);
   assert.match(source, /apcb_transfer_queue/);
   assert.match(source, /renderGlobalQueueStatus/);
 });
@@ -175,7 +177,8 @@ test("background keeps and polls the global submission queue", () => {
   assert.match(background, /pollTransferQueue/);
   assert.match(background, /submissions\/me/);
   assert.match(background, /notificationClaimed/);
-  assert.match(background, /setInterval\(pollTransferQueue, 10000\)/);
+  assert.match(background, /chrome\.alarms\.create/);
+  assert.match(background, /chrome\.alarms\.onAlarm/);
 });
 
 test("Chrome extension uses storage and validated tab creation", () => {

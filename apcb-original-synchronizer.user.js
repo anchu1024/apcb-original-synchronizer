@@ -16,6 +16,36 @@ let chromeStorageCache = {
   problem_models_cache: null
 };
 
+function isExtensionContextValid() {
+  try {
+    return typeof chrome !== "undefined"
+      && !!chrome.runtime
+      && typeof chrome.runtime.id === "string"
+      && chrome.runtime.id.length > 0;
+  } catch (_) {
+    return false;
+  }
+}
+
+function safeRuntimeSendMessage(message, callback) {
+  if (!isExtensionContextValid()) {
+    callback?.({ ok: false, error: "Extension context invalidated" });
+    return;
+  }
+  try {
+    chrome.runtime.sendMessage(message, response => {
+      const error = chrome.runtime?.lastError?.message;
+      if (error) {
+        callback?.({ ok: false, error });
+        return;
+      }
+      callback?.(response);
+    });
+  } catch (error) {
+    callback?.({ ok: false, error: String(error?.message || error) });
+  }
+}
+
 function normalizeAtCoderUrl(url) {
   try {
     const parsed = new URL(url, "https://atcoder.jp");
@@ -235,7 +265,7 @@ function applyDifficultyDisplays() {
 }
 
 function gmGetValue(key, fallback) {
-  if (typeof chrome !== "undefined" && chrome.storage?.local) {
+  if (isExtensionContextValid() && chrome.storage?.local) {
     const stored = chromeStorageCache[key];
     return stored === undefined ? fallback : stored;
   }
@@ -248,7 +278,7 @@ function gmGetValue(key, fallback) {
 }
 
 function gmSetValue(key, value) {
-  if (typeof chrome !== "undefined" && chrome.storage?.local) {
+  if (isExtensionContextValid() && chrome.storage?.local) {
     chromeStorageCache[key] = value;
     chrome.storage.local.set({ [key]: value }).catch?.(() => {});
     return;
@@ -1163,6 +1193,8 @@ function setNativeSourceCode(form, sourceCode) {
       const aceEditor = win.ace.edit(editorElement);
       if (typeof aceEditor?.setValue === "function") {
         aceEditor.setValue(sourceCode, -1);
+        aceEditor.clearSelection?.();
+        aceEditor.moveCursorTo?.(0, 0);
         applied = applied || aceEditor.getValue?.() === sourceCode;
       }
     }
@@ -1234,7 +1266,7 @@ function showTransferPopup(pending) {
     transferPopupHost = document.createElement("div");
     transferPopupHost.id = "apcb-transfer-popup";
     transferPopupHost.style.cssText =
-      "position:fixed;top:12px;right:12px;width:336px;height:246px;z-index:2147483647;" +
+      "position:fixed;top:12px;right:12px;width:640px;height:150px;z-index:2147483647;" +
       "background:#fff;border:1px solid #ccc;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.25);";
     document.documentElement.append(transferPopupHost);
   }
@@ -1254,7 +1286,7 @@ function showTransferPopup(pending) {
   const iframe = document.createElement("iframe");
   iframe.src = `https://atcoder.jp/contests/${contestId}/submit?taskScreenName=${encodeURIComponent(taskId)}`;
   iframe.style.cssText =
-    "width:320px;height:220px;border:0;margin:0 8px;display:block;";
+    "width:620px;height:90px;border:0;margin:0 8px;display:block;";
   transferPopupHost.append(iframe);
 
   const status = document.createElement("div");
@@ -1285,7 +1317,15 @@ function showTransferPopup(pending) {
         }
         if (transferPopupSubmitted) return;
         const sourceApplied = setNativeSourceCode(form, pending.sourceCode);
-        if (!sourceApplied) {
+        const win = doc.defaultView;
+        const aceValue = typeof win?.ace?.edit === "function"
+          ? win.ace.edit(doc.getElementById("editor"))?.getValue?.()
+          : null;
+        const sourceTextarea = form.querySelector(
+          "textarea[name='sourceCode'], textarea[name='source'], textarea#sourceCode, textarea#plain-textarea"
+        );
+        const sourceValue = aceValue ?? sourceTextarea?.value ?? "";
+        if (!sourceApplied || sourceValue.length === 0 || sourceValue !== pending.sourceCode) {
           status.textContent = "ソースコードを設定できませんでした";
           return;
         }
@@ -1390,8 +1430,8 @@ function main() {
     if (!targetUrl) return;
     event.preventDefault();
     event.stopPropagation();
-    if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
-      chrome.runtime.sendMessage({ type: "openInTab", url: targetUrl });
+    if (isExtensionContextValid()) {
+      safeRuntimeSendMessage({ type: "openInTab", url: targetUrl });
     } else {
       window.open(targetUrl, "_blank");
     }
@@ -1401,10 +1441,10 @@ function main() {
     const pending = getPendingTransfer();
     if (pending) showTransferPopup(pending);
     renderGlobalQueueStatus();
-    if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
-      chrome.runtime.sendMessage({ type: "pollTransferQueue" });
+    if (isExtensionContextValid()) {
+      safeRuntimeSendMessage({ type: "pollTransferQueue" });
       setInterval(() => {
-        chrome.runtime.sendMessage({ type: "pollTransferQueue" });
+        safeRuntimeSendMessage({ type: "pollTransferQueue" });
       }, 10000);
     }
   }

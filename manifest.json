@@ -6,7 +6,8 @@
   "permissions": [
     "storage",
     "scripting",
-    "clipboardRead"
+    "clipboardRead",
+    "alarms"
   ],
   "host_permissions": [
     "https://atcoder.jp/contests/*",
