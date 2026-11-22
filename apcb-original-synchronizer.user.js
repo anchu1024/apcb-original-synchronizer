@@ -1080,8 +1080,41 @@ function observeSubmissionListColors() {
 }
 
 let transferPopupHost = null;
+let transferPopupStatus = null;
+let transferPopupDismissTimer = null;
 let transferPopupSubmitted = false;
 let transferPopupSubmissionId = null;
+
+function showTransferPopupStatus(message, dismissAfterMs = 0) {
+  if (!transferPopupStatus) {
+    transferPopupStatus = document.createElement("div");
+    transferPopupStatus.id = "apcb-transfer-status";
+    transferPopupStatus.setAttribute("role", "status");
+    transferPopupStatus.setAttribute("aria-live", "polite");
+    transferPopupStatus.style.cssText =
+      "position:fixed;top:12px;right:12px;z-index:2147483647;" +
+      "max-width:280px;padding:8px 12px;background:#fff;color:#333;" +
+      "border:1px solid #ccc;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,.2);" +
+      "font:13px sans-serif;";
+    document.documentElement.append(transferPopupStatus);
+  }
+  if (transferPopupDismissTimer) {
+    clearTimeout(transferPopupDismissTimer);
+    transferPopupDismissTimer = null;
+  }
+  if (transferPopupStatus.textContent !== message) {
+    transferPopupStatus.textContent = message;
+  }
+  if (dismissAfterMs > 0) {
+    transferPopupDismissTimer = setTimeout(() => {
+      transferPopupStatus?.remove();
+      transferPopupStatus = null;
+      transferPopupHost?.remove();
+      transferPopupHost = null;
+      transferPopupDismissTimer = null;
+    }, dismissAfterMs);
+  }
+}
 
 function isolateTurnstileInIframe(iframeDocument) {
   if (!iframeDocument) return null;
@@ -1215,21 +1248,19 @@ async function pollSubmissionStatus(targetUrl, submissionId) {
 }
 
 function showTransferPopup(pending) {
-  if (!transferPopupHost) {
-    transferPopupHost = document.createElement("div");
-    transferPopupHost.id = "apcb-transfer-popup";
-    transferPopupHost.style.cssText =
-      "position:fixed;top:12px;right:12px;width:640px;height:720px;z-index:2147483647;" +
-      "background:#fff;border:1px solid #ccc;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.25);";
-    document.documentElement.append(transferPopupHost);
-  }
+  if (transferPopupDismissTimer) clearTimeout(transferPopupDismissTimer);
+  transferPopupStatus?.remove();
+  transferPopupHost?.remove();
+  transferPopupStatus = null;
+  transferPopupDismissTimer = null;
+  transferPopupHost = document.createElement("div");
+  transferPopupHost.id = "apcb-transfer-popup";
+  transferPopupHost.style.cssText =
+    "position:fixed;top:0;right:0;width:1px;height:1px;overflow:hidden;" +
+    "z-index:2147483646;opacity:.01;pointer-events:none;";
+  document.documentElement.append(transferPopupHost);
   transferPopupHost.replaceChildren();
   transferPopupSubmitted = false;
-
-  const title = document.createElement("div");
-  title.textContent = "本家にも送信";
-  title.style.cssText = "height:26px;padding:8px 10px 0;font-weight:bold;font-size:13px;";
-  transferPopupHost.append(title);
 
   const target = new URL(pending.targetUrl);
   const contestId = target.pathname.match(/^\/contests\/([^/]+)\//)?.[1];
@@ -1239,56 +1270,86 @@ function showTransferPopup(pending) {
   const iframe = document.createElement("iframe");
   iframe.src = `https://atcoder.jp/contests/${contestId}/submit?taskScreenName=${encodeURIComponent(taskId)}`;
   iframe.style.cssText =
-    "width:620px;height:650px;border:0;margin:0 8px;display:block;";
+    "width:620px;height:650px;border:0;display:block;";
   transferPopupHost.append(iframe);
-
-  const status = document.createElement("div");
-  status.textContent = "Cloudflare認証を待っています";
-  status.style.cssText = "position:absolute;left:10px;bottom:-28px;color:#333;font-size:12px;";
-  transferPopupHost.append(status);
+  showTransferPopupStatus("個人認証中...");
 
   let submittedAt = 0;
+  let challengeRevealed = false;
+  let challengeRevealTimer = null;
   iframe.addEventListener("load", () => {
+    if (submittedAt) return;
     try {
       const doc = iframe.contentDocument;
       if (!doc) return;
       const deadline = Date.now() + 60000;
+      if (challengeRevealTimer) clearTimeout(challengeRevealTimer);
+      challengeRevealTimer = setTimeout(() => {
+        challengeRevealTimer = null;
+        const token = doc.querySelector("input[name='cf-turnstile-response']");
+        if (!transferPopupHost || submittedAt ||
+            (token?.value && token.value.length > 20)) return;
+        transferPopupHost.style.cssText =
+          "position:fixed;top:12px;right:12px;width:640px;height:720px;overflow:visible;" +
+          "z-index:2147483646;opacity:1;pointer-events:auto;background:#fff;" +
+          "border:1px solid #ccc;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.25);";
+        challengeRevealed = true;
+      }, 10000);
       let sourceInjectionStarted = false;
       let sourceInjectionResult = null;
       const waitForm = setInterval(() => {
         const form = setNativeSubmitForm(doc, pending);
         if (!form) {
-          status.textContent = "提出フォームを読み込み中";
-          if (Date.now() >= deadline) clearInterval(waitForm);
+          if (Date.now() >= deadline) {
+            clearInterval(waitForm);
+            showTransferPopupStatus("提出画面を読み込めませんでした", 5000);
+          }
           return;
         }
         if (!sourceInjectionStarted) {
           sourceInjectionStarted = true;
           setNativeSourceCodeInPage(pending.sourceCode, contestId, taskId).then(result => {
             sourceInjectionResult = result;
-            if (!result.success) status.textContent = "ソースコードを設定できませんでした";
+            if (!result.success) {
+              clearInterval(waitForm);
+              showTransferPopupStatus("ソースコードを設定できませんでした", 5000);
+            }
           }, error => {
             console.error("[APCB] source injection failed", error);
             sourceInjectionResult = { success: false };
-            status.textContent = "ソースコードを設定できませんでした";
+            clearInterval(waitForm);
+            showTransferPopupStatus("ソースコードを設定できませんでした", 5000);
           });
         }
         if (sourceInjectionResult && !sourceInjectionResult.success) return;
         const turnstileInput = form.querySelector("input[name='cf-turnstile-response']");
         if (!turnstileInput || !turnstileInput.value || turnstileInput.value.length <= 20) {
-          status.textContent = "Cloudflare認証を完了してください";
-          if (Date.now() >= deadline) clearInterval(waitForm);
+          showTransferPopupStatus("個人認証中...");
+          if (Date.now() >= deadline) {
+            clearInterval(waitForm);
+            showTransferPopupStatus("個人認証を完了できませんでした");
+          }
           return;
+        }
+        if (challengeRevealTimer) {
+          clearTimeout(challengeRevealTimer);
+          challengeRevealTimer = null;
+        }
+        if (challengeRevealed) {
+          transferPopupHost.style.cssText =
+            "position:fixed;top:0;right:0;width:1px;height:1px;overflow:hidden;" +
+            "z-index:2147483646;opacity:.01;pointer-events:none;";
+          challengeRevealed = false;
         }
         if (transferPopupSubmitted) return;
         if (!sourceInjectionResult?.success) {
-          status.textContent = "ソースコードを設定しています";
+          showTransferPopupStatus("提出準備中...");
           return;
         }
         console.log("[APCB] source injection verified", sourceInjectionResult);
         transferPopupSubmitted = true;
         clearInterval(waitForm);
-        status.textContent = "提出しています";
+        showTransferPopupStatus("提出しました。採点中...");
         const submitButton = form.querySelector("button[type='submit'], input[type='submit']");
         if (typeof form.requestSubmit === "function") {
           submitButton ? form.requestSubmit(submitButton) : form.requestSubmit();
@@ -1321,7 +1382,7 @@ function showTransferPopup(pending) {
         const submitStatus = await pollSubmissionStatus(pending.targetUrl, transferPopupSubmissionId);
         if (submitStatus === "AC") {
           clearInterval(pollStatus);
-          status.textContent = "本家ACを確認しました";
+          showTransferPopupStatus("本家ACを確認しました", 5000);
           const submitted = getSubmittedTasks();
           submitted[normalizeAtCoderUrl(pending.targetUrl)] = {
             status: "AC",
@@ -1336,17 +1397,21 @@ function showTransferPopup(pending) {
             queueItem.notificationClaimed = false;
             setTransferQueue(queue);
           }
+        } else if (submitStatus && /^(WJ|JUDGING)$/i.test(submitStatus)) {
+          showTransferPopupStatus("提出しました。採点中...");
         } else if (submitStatus) {
-          status.textContent = `本家判定: ${submitStatus}`;
+          clearInterval(pollStatus);
+          showTransferPopupStatus(`本家判定: ${submitStatus}`, 5000);
         }
       }, 3000);
     } catch (error) {
-      status.textContent = "提出ページの読み込みに失敗しました";
+      showTransferPopupStatus("提出ページの読み込みに失敗しました", 5000);
     }
   });
 }
 
 let globalQueueHost = null;
+let globalQueueDismissTimer = null;
 function renderGlobalQueueStatus() {
   if (!isLectureContestUrl(location.href)) return;
   const queue = getTransferQueue();
@@ -1373,6 +1438,12 @@ function renderGlobalQueueStatus() {
     acItems.map(item =>
       `${item.targetUrl?.split("/").pop() || "問題"}: 本家ACを確認しました`
     ).join("\n");
+  if (globalQueueDismissTimer) clearTimeout(globalQueueDismissTimer);
+  globalQueueDismissTimer = setTimeout(() => {
+    globalQueueHost?.remove();
+    globalQueueHost = null;
+    globalQueueDismissTimer = null;
+  }, 5000);
 }
 
 function main() {

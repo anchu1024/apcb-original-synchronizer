@@ -101,6 +101,11 @@ test("standings and individual problem difficulty displays are configured", () =
 test("live Turnstile popup submits through a native form", () => {
   assert.match(source, /function showTransferPopup/);
   assert.match(source, /iframe\.src = `https:\/\/atcoder\.jp\/contests\/\$\{contestId\}\/submit\?taskScreenName=/);
+  assert.match(source, /width:1px;height:1px;overflow:hidden/);
+  assert.match(source, /個人認証中\.\.\./);
+  assert.match(source, /提出しました。採点中\.\.\./);
+  assert.match(source, /showTransferPopupStatus\("本家ACを確認しました", 5000\)/);
+  assert.match(source, /}, 10000\)/);
   assert.match(source, /width:640px/);
   assert.match(source, /height:650px/);
   assert.doesNotMatch(source, /body>\*:not\(#main-container\)/);
@@ -113,7 +118,7 @@ test("live Turnstile popup submits through a native form", () => {
   assert.match(source, /turnstileInput\.value\.length <= 20/);
   assert.match(source, /width:640px/);
   assert.match(source, /isExtensionContextValid/);
-  assert.match(source, /本家にも送信/);
+  assert.match(source, /apcb-transfer-status/);
   assert.match(source, /document\.addEventListener\("click", event =>/);
   assert.match(source, /event\.altKey/);
   assert.match(source, /safeRuntimeSendMessage\(\{ type: "openInTab", url: targetUrl \}\)/);
