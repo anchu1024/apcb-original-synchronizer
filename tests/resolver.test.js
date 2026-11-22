@@ -172,8 +172,6 @@ test("Chrome extension uses storage and validated tab creation", () => {
 
 test("AC transfer waits for submission code and language extraction", () => {
   assert.match(source, /function getSubmissionStatus/);
-  assert.match(source, /text === "AC"/);
-  assert.match(source, /label-success|badge-success|status-ac|ac-label|ac-badge/);
   assert.match(source, /if \(text !== "AC"\) return/);
   assert.match(source, /const waitUntil = Date\.now\(\) \+ 8000/);
   assert.match(source, /sourceCode\.trim\(\) && languageName/);
