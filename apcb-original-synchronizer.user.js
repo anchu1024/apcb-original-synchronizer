@@ -1122,7 +1122,7 @@ function setNativeSubmitForm(iframeDocument, pending) {
   const taskId = taskMatch ? decodeURIComponent(taskMatch[1]) : "";
   const languageSelect = taskId
     ? form.querySelector(`select[name='data.LanguageId'].current`) ||
-      form.querySelector(`#select-lang-${taskId} select[name='data.LanguageId']`) ||
+      form.querySelector(`#select-lang-${taskId} select`) ||
       form.querySelector("#select-lang select.current") ||
       form.querySelector("select[name='data.LanguageId']")
     : form.querySelector("select[name='data.LanguageId'].current") ||
@@ -1252,7 +1252,7 @@ function showTransferPopup(pending) {
   if (!contestId || !taskId) return;
 
   const iframe = document.createElement("iframe");
-  iframe.src = `https://atcoder.jp/contests/${contestId}/tasks/${encodeURIComponent(taskId)}`;
+  iframe.src = `https://atcoder.jp/contests/${contestId}/submit?taskScreenName=${encodeURIComponent(taskId)}`;
   iframe.style.cssText =
     "width:320px;height:220px;border:0;margin:0 8px;display:block;";
   transferPopupHost.append(iframe);

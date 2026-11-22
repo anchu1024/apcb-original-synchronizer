@@ -99,7 +99,7 @@ test("standings and individual problem difficulty displays are configured", () =
 
 test("live Turnstile popup submits through a native form", () => {
   assert.match(source, /function showTransferPopup/);
-  assert.match(source, /iframe\.src = `https:\/\/atcoder\.jp\/contests\/\$\{contestId\}\/tasks\/\$\{encodeURIComponent\(taskId\)\}`/);
+  assert.match(source, /iframe\.src = `https:\/\/atcoder\.jp\/contests\/\$\{contestId\}\/submit\?taskScreenName=/);
   assert.match(source, /cf-turnstile-response/);
   assert.match(source, /form\.requestSubmit/);
   assert.match(source, /submit\(\);/);
