@@ -368,6 +368,28 @@ function removeSubmittedTask(targetUrl) {
   setSubmittedTasks(submitted);
 }
 
+function sanitizeSubmissionSource(source) {
+  if (typeof source !== "string") return "";
+  let code = source.replace(/\r\n?/g, "\n").replace(/^\uFEFF/, "");
+  if (!code) return "";
+
+  code = code.replace(/^123456789101112131415161718192021/, "");
+
+  const garbagePatterns = [
+    /X{20,}/,
+    /[\u0590-\u05FF]{20,}/
+  ];
+  let cutoff = code.length;
+  garbagePatterns.forEach(pattern => {
+    const match = pattern.exec(code);
+    if (match && match.index < cutoff) cutoff = match.index;
+  });
+  code = code.slice(0, cutoff).trimEnd();
+
+  if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(code)) return "";
+  return code;
+}
+
 async function extractSubmissionCode() {
   const analyzeSourcePayload = (source, origin) => {
     let hash = 2166136261;
@@ -412,8 +434,11 @@ async function extractSubmissionCode() {
             .replace(/^\uFEFF/, "");
           if (clipboardCode.trim()
             && !/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(clipboardCode)) {
-            analyzeSourcePayload(clipboardCode, "clipboard/.btn-copy");
-            return clipboardCode;
+            const sanitized = sanitizeSubmissionSource(clipboardCode);
+            if (sanitized) {
+              analyzeSourcePayload(sanitized, "clipboard/.btn-copy sanitized");
+              return sanitized;
+            }
           }
         }
       } catch (_) {}
@@ -431,7 +456,8 @@ async function extractSubmissionCode() {
   const code = (clone.textContent || "").replace(/\r\n?/g, "\n");
   if (!code.trim()) return "";
   if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(code)) return "";
-  const normalizedCode = code.replace(/^\uFEFF/, "");
+  const normalizedCode = sanitizeSubmissionSource(code);
+  if (!normalizedCode) return "";
   analyzeSourcePayload(normalizedCode, "fallback/pre#submission-code clone");
   return normalizedCode;
 }
@@ -991,6 +1017,7 @@ if (typeof window !== "undefined") {
   window.getDifficultyColor = getDifficultyColor;
   window.extractTaskId = extractTaskId;
   window.extractSubmissionCode = extractSubmissionCode;
+  window.sanitizeSubmissionSource = sanitizeSubmissionSource;
   window.extractLanguageName = extractLanguageName;
   window.setSourceCode = setSourceCode;
   window.hasAtCoderWorkspaceEditor = hasAtCoderWorkspaceEditor;
