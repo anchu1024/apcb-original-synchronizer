@@ -1,13 +1,117 @@
 async function getQueue() {
-  const result = await chrome.storage.local.get("apcb_transfer_queue");
-  return Array.isArray(result.apcb_transfer_queue) ? result.apcb_transfer_queue : [];
+  const result = await chrome.storage.local.get(TRANSFER_QUEUE_KEY);
+  return Array.isArray(result[TRANSFER_QUEUE_KEY]) ? result[TRANSFER_QUEUE_KEY] : [];
 }
 
 async function setQueue(queue) {
-  await chrome.storage.local.set({ apcb_transfer_queue: queue });
+  await chrome.storage.local.set({ [TRANSFER_QUEUE_KEY]: queue });
 }
 
-async function findSubmissionIdFromMe(contestId, taskId) {
+const TRANSFER_QUEUE_KEY = "apcb_transfer_queue";
+const SUBMISSION_LOCK_KEY = "apcb_submission_lock";
+let queueMutationTail = Promise.resolve();
+
+function withQueueMutation(operation) {
+  const result = queueMutationTail.then(operation, operation);
+  queueMutationTail = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+function applyQueueDelta(queue, updates, removeIds) {
+  const removed = new Set(removeIds || []);
+  const merged = queue.filter(item => !removed.has(item.id));
+  for (const update of updates || []) {
+    const index = merged.findIndex(item => item.id === update.id);
+    if (update.item) {
+      if (index < 0) merged.unshift({ ...update.item });
+      else merged[index] = { ...merged[index], ...update.item };
+      continue;
+    }
+    if (index < 0) continue;
+    Object.assign(merged[index], update.changes || {});
+    (update.unset || []).forEach(key => delete merged[index][key]);
+  }
+  return merged
+    .sort((left, right) => (right.createdAt || 0) - (left.createdAt || 0))
+    .slice(0, 20);
+}
+
+async function enqueueTransferQueueItem(item) {
+  return withQueueMutation(async () => {
+    const queue = await getQueue();
+    const existing = queue.find(candidate =>
+      candidate.lectureSubmissionUrl &&
+      candidate.lectureSubmissionUrl === item.lectureSubmissionUrl
+    );
+    if (existing) return existing;
+    queue.unshift(item);
+    const updated = queue
+      .sort((left, right) => (right.createdAt || 0) - (left.createdAt || 0))
+      .slice(0, 20);
+    await setQueue(updated);
+    return item;
+  });
+}
+
+async function mergeTransferQueue(updates, removeIds) {
+  return withQueueMutation(async () => {
+    const queue = applyQueueDelta(await getQueue(), updates, removeIds);
+    await setQueue(queue);
+  });
+}
+
+async function acquireSubmissionSlot(queueId, ownerToken, tabId) {
+  return withQueueMutation(async () => {
+    const stored = await chrome.storage.local.get(SUBMISSION_LOCK_KEY);
+    let lock = stored[SUBMISSION_LOCK_KEY];
+    if (lock?.expiresAt > Date.now()) {
+      if (lock.queueId === queueId && lock.ownerToken === ownerToken) {
+        return { ok: true, acquired: true };
+      }
+      return { ok: true, acquired: false, reason: "busy" };
+    }
+    if (lock) {
+      await chrome.storage.local.remove(SUBMISSION_LOCK_KEY);
+    }
+
+    const queue = await getQueue();
+    const item = queue.find(candidate => candidate.id === queueId);
+    if (!item) return { ok: false, reason: "missing_queue_item" };
+    if (item.state !== "ready") {
+      return { ok: true, acquired: false, reason: "already_started", item };
+    }
+
+    lock = {
+      queueId,
+      ownerToken,
+      tabId,
+      expiresAt: Date.now() + 120000
+    };
+    await chrome.storage.local.set({ [SUBMISSION_LOCK_KEY]: lock });
+    return { ok: true, acquired: true };
+  });
+}
+
+async function releaseSubmissionSlot(queueId, ownerToken) {
+  return withQueueMutation(async () => {
+    const stored = await chrome.storage.local.get(SUBMISSION_LOCK_KEY);
+    const lock = stored[SUBMISSION_LOCK_KEY];
+    if (lock?.queueId === queueId && lock.ownerToken === ownerToken) {
+      await chrome.storage.local.remove(SUBMISSION_LOCK_KEY);
+    }
+    return { ok: true };
+  });
+}
+
+async function releaseSubmissionSlotForQueueItem(queueId) {
+  const stored = await chrome.storage.local.get(SUBMISSION_LOCK_KEY);
+  const lock = stored[SUBMISSION_LOCK_KEY];
+  if (lock?.queueId === queueId) {
+    await chrome.storage.local.remove(SUBMISSION_LOCK_KEY);
+  }
+}
+
+async function findSubmissionIdFromMe(contestId, taskId, previousSubmissionId) {
   const response = await fetch(
     `https://atcoder.jp/contests/${contestId}/submissions/me?_=${Date.now()}`,
     { credentials: "include" }
@@ -19,7 +123,8 @@ async function findSubmissionIdFromMe(contestId, taskId) {
     candidate.includes(`/contests/${contestId}/tasks/${taskId}`) ||
     candidate.includes(`/tasks/${taskId}`)
   );
-  return row?.match(/\/submissions\/(\d+)/)?.[1] || null;
+  const submissionId = row?.match(/\/submissions\/(\d+)/)?.[1] || null;
+  return submissionId && submissionId !== previousSubmissionId ? submissionId : null;
 }
 
 async function getSubmissionStatus(contestId, submissionId) {
@@ -36,43 +141,123 @@ async function getSubmissionStatus(contestId, submissionId) {
 
 async function pollTransferQueue() {
   const queue = await getQueue();
-  let changed = false;
+  const changes = [];
+
   for (const item of queue) {
-    if (item.state !== "submitted") continue;
+    if (!["submitting", "submitted"].includes(item.state)) continue;
+    const original = { ...item };
+    let acRecord = null;
     try {
-      const target = new URL(item.targetUrl);
-      const contestId = target.pathname.match(/^\/contests\/([^/]+)\//)?.[1];
-      const taskId = decodeURIComponent(target.pathname.match(/\/tasks\/([^/?#]+)/)?.[1] || "");
-      if (!contestId) continue;
-      if (!item.submissionId) {
-        item.submissionId = await findSubmissionIdFromMe(contestId, taskId);
-        changed = true;
+      if (item.state === "submitted" && !item.preSubmitBaselineCaptured) {
+        item.state = "unverified";
+        item.status = "受付未確認";
+        delete item.submissionId;
+      } else {
+        const target = new URL(item.targetUrl);
+        const contestId = target.pathname.match(/^\/contests\/([^/]+)\//)?.[1];
+        const taskId = decodeURIComponent(target.pathname.match(/\/tasks\/([^/?#]+)/)?.[1] || "");
+        if (!contestId) continue;
+        if (!item.submissionId) {
+          if (!item.preSubmitBaselineCaptured) {
+            item.state = "unverified";
+            item.status = "受付未確認";
+          } else {
+            item.submissionId = await findSubmissionIdFromMe(
+              contestId,
+              taskId,
+              item.previousSubmissionId
+            );
+            if (item.submissionId) {
+              item.state = "submitted";
+            } else if (Date.now() - item.submittedAt >= 90000) {
+              item.state = "failed";
+              item.status = "受付未確認";
+            }
+          }
+        }
+        if (item.submissionId) {
+          const status = await getSubmissionStatus(contestId, item.submissionId);
+          if (status === "AC") {
+            item.state = "ac";
+            item.notificationClaimed = false;
+            acRecord = {
+              targetUrl: normalizeQueueUrl(item.targetUrl),
+              submissionId: item.submissionId,
+              lectureUrl: item.lectureUrl || ""
+            };
+          } else if (status && !/^(WJ|JUDGING)$/i.test(status)) {
+            item.state = "finished";
+            item.status = status;
+          }
+        }
       }
-      if (!item.submissionId) continue;
-      const status = await getSubmissionStatus(contestId, item.submissionId);
-      if (status === "AC") {
-        item.state = "ac";
-        item.notificationClaimed = false;
-        changed = true;
-        const stored = await chrome.storage.local.get("submitted_tasks");
-        const submitted = stored.submitted_tasks && typeof stored.submitted_tasks === "object"
-          ? stored.submitted_tasks
-          : {};
-        submitted[normalizeQueueUrl(item.targetUrl)] = {
+    } catch (error) {
+      if (item.state === "submitting" &&
+          Date.now() - (item.submittedAt || 0) >= 90000) {
+        item.state = "failed";
+        item.status = "受付未確認";
+      }
+      console.error("[APCB] transfer queue polling failed", error);
+    }
+
+    const patch = {};
+    const unset = [];
+    Object.keys(item).forEach(key => {
+      if (JSON.stringify(item[key]) !== JSON.stringify(original[key])) patch[key] = item[key];
+    });
+    Object.keys(original).forEach(key => {
+      if (!Object.prototype.hasOwnProperty.call(item, key)) unset.push(key);
+    });
+    if (Object.keys(patch).length || unset.length) {
+      changes.push({
+        id: item.id,
+        expectedState: original.state,
+        expectedSubmissionId: original.submissionId || null,
+        patch,
+        unset,
+        acRecord
+      });
+    }
+  }
+
+  if (!changes.length) return;
+  await withQueueMutation(async () => {
+    const latestQueue = await getQueue();
+    const releaseQueueIds = [];
+    const acceptedRecords = [];
+    let changed = false;
+    for (const update of changes) {
+      const current = latestQueue.find(item => item.id === update.id);
+      if (!current || current.state !== update.expectedState ||
+          (current.submissionId || null) !== update.expectedSubmissionId) continue;
+      Object.assign(current, update.patch);
+      update.unset.forEach(key => delete current[key]);
+      changed = true;
+      if (update.acRecord) acceptedRecords.push(update.acRecord);
+      if (["submitted", "failed", "unverified"].includes(update.patch.state)) {
+        releaseQueueIds.push(update.id);
+      }
+    }
+    if (changed) await setQueue(latestQueue);
+    if (acceptedRecords.length) {
+      const stored = await chrome.storage.local.get("submitted_tasks");
+      const submitted = stored.submitted_tasks && typeof stored.submitted_tasks === "object"
+        ? stored.submitted_tasks
+        : {};
+      acceptedRecords.forEach(record => {
+        submitted[record.targetUrl] = {
           status: "AC",
           timestamp: Date.now(),
-          lectureUrl: item.lectureUrl || "",
-          submissionId: item.submissionId
+          lectureUrl: record.lectureUrl,
+          submissionId: record.submissionId
         };
-        await chrome.storage.local.set({ submitted_tasks: submitted });
-      } else if (status && !/^(WJ|JUDGING)$/i.test(status)) {
-        item.state = "finished";
-        item.status = status;
-        changed = true;
-      }
-    } catch (_) {}
-  }
-  if (changed) await setQueue(queue);
+      });
+      await chrome.storage.local.set({ submitted_tasks: submitted });
+    }
+    for (const queueId of releaseQueueIds) {
+      await releaseSubmissionSlotForQueueItem(queueId);
+    }
+  });
 }
 
 function normalizeQueueUrl(url) {
@@ -88,8 +273,68 @@ function normalizeQueueUrl(url) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "mergeTransferQueue") {
+    if (!Array.isArray(message.updates) || !Array.isArray(message.removeIds)) {
+      sendResponse({ ok: false, error: "Invalid transfer queue delta" });
+      return false;
+    }
+    mergeTransferQueue(message.updates, message.removeIds)
+      .then(() => sendResponse({ ok: true }))
+      .catch(error => {
+        console.error("[APCB] transfer queue merge failed", error);
+        sendResponse({ ok: false, error: error.message });
+      });
+    return true;
+  }
+  if (message?.type === "enqueueTransferQueueItem") {
+    const item = message.item;
+    if (!item || typeof item.id !== "string" ||
+        typeof item.lectureSubmissionUrl !== "string" ||
+        typeof item.targetUrl !== "string") {
+      sendResponse({ ok: false, error: "Invalid transfer queue item" });
+      return false;
+    }
+    enqueueTransferQueueItem(item)
+      .then(queuedItem => sendResponse({ ok: true, item: queuedItem }))
+      .catch(error => {
+        console.error("[APCB] transfer queue enqueue failed", error);
+        sendResponse({ ok: false, error: error.message });
+      });
+    return true;
+  }
+  if (message?.type === "acquireSubmissionSlot") {
+    if (typeof message.queueId !== "string" || typeof message.ownerToken !== "string") {
+      sendResponse({ ok: false, error: "Invalid submission slot request" });
+      return false;
+    }
+    acquireSubmissionSlot(message.queueId, message.ownerToken, sender.tab?.id)
+      .then(sendResponse)
+      .catch(error => {
+        console.error("[APCB] submission slot acquisition failed", error);
+        sendResponse({ ok: false, error: error.message });
+      });
+    return true;
+  }
+  if (message?.type === "releaseSubmissionSlot") {
+    if (typeof message.queueId !== "string" || typeof message.ownerToken !== "string") {
+      sendResponse({ ok: false, error: "Invalid submission slot release" });
+      return false;
+    }
+    releaseSubmissionSlot(message.queueId, message.ownerToken)
+      .then(sendResponse)
+      .catch(error => {
+        console.error("[APCB] submission slot release failed", error);
+        sendResponse({ ok: false, error: error.message });
+      });
+    return true;
+  }
   if (message?.type === "pollTransferQueue") {
-    pollTransferQueue().then(() => sendResponse({ ok: true }));
+    pollTransferQueue()
+      .then(() => sendResponse({ ok: true }))
+      .catch(error => {
+        console.error("[APCB] transfer queue poll failed", error);
+        sendResponse({ ok: false, error: error.message });
+      });
     return true;
   }
   if (message?.type === "setNativeSubmitSource" &&

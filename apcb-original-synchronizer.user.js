@@ -15,6 +15,8 @@ let chromeStorageCache = {
   apcb_transfer_queue: [],
   problem_models_cache: null
 };
+const transferQueueSnapshots = new WeakMap();
+let transferQueueSnapshot = [];
 
 function isExtensionContextValid() {
   try {
@@ -40,6 +42,12 @@ function safeRuntimeSendMessage(message, callback) {
   } catch (error) {
     callback?.({ ok: false, error: String(error?.message || error) });
   }
+}
+
+function sendRuntimeMessage(message) {
+  return new Promise(resolve => {
+    safeRuntimeSendMessage(message, response => resolve(response));
+  });
 }
 
 function normalizeAtCoderUrl(url) {
@@ -295,20 +303,151 @@ function setSubmittedTasks(value) {
 
 function getTransferQueue() {
   const value = gmGetValue(CONFIG.TRANSFER_QUEUE_KEY, []);
-  return Array.isArray(value) ? value : [];
+  const queue = Array.isArray(value) ? value.map(item => ({ ...item })) : [];
+  const snapshot = queue.map(item => ({ ...item }));
+  transferQueueSnapshots.set(queue, snapshot);
+  transferQueueSnapshot = snapshot;
+  return queue;
+}
+
+function applyTransferQueueDelta(queue, delta) {
+  const removeIds = new Set(delta.removeIds || []);
+  const merged = queue
+    .filter(item => !removeIds.has(item.id))
+    .map(item => ({ ...item }));
+
+  (delta.updates || []).forEach(update => {
+    const index = merged.findIndex(item => item.id === update.id);
+    if (update.item) {
+      if (index < 0) merged.unshift({ ...update.item });
+      else merged[index] = { ...merged[index], ...update.item };
+      return;
+    }
+    if (index < 0) return;
+    Object.assign(merged[index], update.changes || {});
+    (update.unset || []).forEach(key => delete merged[index][key]);
+  });
+
+  return merged
+    .sort((left, right) => (right.createdAt || 0) - (left.createdAt || 0))
+    .slice(0, 20);
+}
+
+function createTransferQueueDelta(queue) {
+  const previous = transferQueueSnapshots.get(queue) || transferQueueSnapshot;
+  const previousById = new Map(previous.map(item => [item.id, item]));
+  const nextIds = new Set(queue.map(item => item.id));
+  const updates = [];
+
+  queue.forEach(item => {
+    const oldItem = previousById.get(item.id);
+    if (!oldItem) {
+      updates.push({ id: item.id, item: { ...item } });
+      return;
+    }
+    const changes = {};
+    const unset = [];
+    Object.keys(item).forEach(key => {
+      if (JSON.stringify(item[key]) !== JSON.stringify(oldItem[key])) {
+        changes[key] = item[key];
+      }
+    });
+    Object.keys(oldItem).forEach(key => {
+      if (!Object.prototype.hasOwnProperty.call(item, key)) unset.push(key);
+    });
+    if (Object.keys(changes).length || unset.length) {
+      updates.push({ id: item.id, changes, unset });
+    }
+  });
+
+  const delta = {
+    updates,
+    removeIds: previous
+      .filter(item => !nextIds.has(item.id))
+      .map(item => item.id)
+  };
+  const snapshot = queue.map(item => ({ ...item }));
+  transferQueueSnapshots.set(queue, snapshot);
+  transferQueueSnapshot = snapshot;
+  return delta;
 }
 
 function setTransferQueue(queue) {
-  gmSetValue(CONFIG.TRANSFER_QUEUE_KEY, queue);
+  if (!isExtensionContextValid() || !chrome.storage?.local) {
+    gmSetValue(CONFIG.TRANSFER_QUEUE_KEY, queue);
+    const snapshot = queue.map(item => ({ ...item }));
+    transferQueueSnapshots.set(queue, snapshot);
+    transferQueueSnapshot = snapshot;
+    return Promise.resolve({ ok: true });
+  }
+
+  const delta = createTransferQueueDelta(queue);
+  if (!delta.updates.length && !delta.removeIds.length) {
+    return Promise.resolve({ ok: true });
+  }
+  chromeStorageCache[CONFIG.TRANSFER_QUEUE_KEY] = applyTransferQueueDelta(
+    chromeStorageCache[CONFIG.TRANSFER_QUEUE_KEY] || [],
+    delta
+  );
+  return sendRuntimeMessage({
+    type: "mergeTransferQueue",
+    updates: delta.updates,
+    removeIds: delta.removeIds
+  }).then(response => {
+    if (!response?.ok) {
+      console.error("[APCB] failed to merge transfer queue", response?.error);
+    }
+    return response;
+  });
 }
 
 async function persistTransferQueue(queue) {
-  if (isExtensionContextValid() && chrome.storage?.local) {
-    await chrome.storage.local.set({ [CONFIG.TRANSFER_QUEUE_KEY]: queue });
-    chromeStorageCache[CONFIG.TRANSFER_QUEUE_KEY] = queue;
-    return;
+  const response = await setTransferQueue(queue);
+  if (!response?.ok) throw new Error(response?.error || "Transfer queue update failed");
+}
+
+async function enqueueTransferQueueItem(queueItem) {
+  if (!isExtensionContextValid() || !chrome.storage?.local) {
+    const queue = getTransferQueue();
+    const existing = queue.find(item =>
+      item.lectureSubmissionUrl === queueItem.lectureSubmissionUrl
+    );
+    if (existing) return existing;
+    queue.unshift(queueItem);
+    setTransferQueue(queue.slice(0, 20));
+    return queueItem;
   }
-  setTransferQueue(queue);
+
+  const response = await sendRuntimeMessage({
+    type: "enqueueTransferQueueItem",
+    item: queueItem
+  });
+  if (!response?.ok || !response.item) {
+    throw new Error(response?.error || "Could not enqueue transfer");
+  }
+  const queue = (chromeStorageCache[CONFIG.TRANSFER_QUEUE_KEY] || [])
+    .filter(item => item.id !== response.item.id);
+  queue.unshift({ ...response.item });
+  chromeStorageCache[CONFIG.TRANSFER_QUEUE_KEY] = queue.slice(0, 20);
+  transferQueueSnapshot = chromeStorageCache[CONFIG.TRANSFER_QUEUE_KEY]
+    .map(item => ({ ...item }));
+  return response.item;
+}
+
+function requestSubmissionSlot(queueId, ownerToken) {
+  return sendRuntimeMessage({
+    type: "acquireSubmissionSlot",
+    queueId,
+    ownerToken
+  });
+}
+
+function releaseSubmissionSlot(queueId, ownerToken) {
+  return sendRuntimeMessage({
+    type: "releaseSubmissionSlot",
+    queueId,
+    ownerToken
+  });
 }
 
 function findTransferQueueItemForPending(pending) {
@@ -678,7 +817,7 @@ function monitorSubmissionDetail() {
     if (item.lectureSubmissionUrl) {
       return normalizeAtCoderUrl(item.lectureSubmissionUrl) === lectureSubmissionUrl;
     }
-    return ["submitted", "ac", "finished"].includes(item.state) &&
+    return ["submitted", "ac", "finished", "unverified", "failed"].includes(item.state) &&
       normalizeAtCoderUrl(item.lectureUrl) === normalizedLectureUrl;
   });
   if (existingQueueItem) {
@@ -687,13 +826,8 @@ function monitorSubmissionDetail() {
         ...existingQueueItem,
         queueId: existingQueueItem.id
       });
-    } else if (existingQueueItem.state === "submitted") {
-      showTransferPopupStatus("提出しました。採点中...", 5000);
-    } else if (existingQueueItem.state === "finished") {
-      showTransferPopupStatus(
-        `本家判定: ${existingQueueItem.status || "終了"}`,
-        5000
-      );
+    } else {
+      showTransferQueueProgress(existingQueueItem);
     }
     return;
   }
@@ -722,7 +856,7 @@ function monitorSubmissionDetail() {
       console.groupEnd();
       const createdAt = Date.now();
       const queueItem = {
-        id: `${normalizedTarget}#${createdAt}`,
+        id: `${normalizedTarget}#${createdAt}-${Math.random().toString(36).slice(2, 10)}`,
         state: "ready",
         targetUrl: normalizedTarget,
         lectureUrl: normalizeAtCoderUrl(lectureUrl),
@@ -732,26 +866,25 @@ function monitorSubmissionDetail() {
         createdAt,
         notificationClaimed: false
       };
-      const queue = getTransferQueue();
-      queue.unshift(queueItem);
-      setTransferQueue(queue.slice(0, 20));
+      let queuedItem;
+      try {
+        queuedItem = await enqueueTransferQueueItem(queueItem);
+      } catch (error) {
+        console.error("[APCB] failed to enqueue transfer", error);
+        showTransferPopupStatus("引き継ぎを保存できませんでした", 5000);
+        submissionTransferStarted = false;
+        return;
+      }
       gmSetValue(CONFIG.PENDING_TRANSFER_KEY, {
         targetUrl: normalizedTarget,
         lectureUrl: normalizeAtCoderUrl(lectureUrl),
         lectureSubmissionUrl: normalizeAtCoderUrl(location.href),
         languageName,
         sourceCode,
-        createdAt,
-        queueId: queueItem.id
+        createdAt: queuedItem.createdAt,
+        queueId: queuedItem.id
       });
-      showTransferPopup({
-        targetUrl: normalizedTarget,
-        languageName,
-        sourceCode,
-        queueId: queueItem.id,
-        createdAt,
-        lectureUrl: normalizeAtCoderUrl(lectureUrl)
-      });
+      showTransferPopup({ ...queuedItem, queueId: queuedItem.id });
       return;
     }
 
@@ -1176,6 +1309,24 @@ function showTransferPopupStatus(message, dismissAfterMs = 0) {
   }
 }
 
+function showTransferQueueProgress(queueItem) {
+  if (queueItem.state === "submitting") {
+    showTransferPopupStatus("本家への受付を確認中...", 5000);
+  } else if (queueItem.state === "submitted") {
+    if (!queueItem.preSubmitBaselineCaptured) {
+      showTransferPopupStatus("以前の提出受付は未確認です。AtCoder側を確認してください", 5000);
+    } else if (queueItem.submissionId) {
+      showTransferPopupStatus("本家受付済み。判定待ち...", 5000);
+    } else {
+      showTransferPopupStatus("本家への受付を確認中...", 5000);
+    }
+  } else if (queueItem.state === "unverified" || queueItem.state === "failed") {
+    showTransferPopupStatus("本家の提出を確認できませんでした。AtCoder側を確認してください", 5000);
+  } else if (queueItem.state === "finished") {
+    showTransferPopupStatus(`本家判定: ${queueItem.status || "終了"}`, 5000);
+  }
+}
+
 function isolateTurnstileInIframe(iframeDocument) {
   if (!iframeDocument) return null;
   const container = iframeDocument.querySelector(
@@ -1273,23 +1424,39 @@ function selectLanguageOnDocument(doc, select, languageName) {
   select.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-async function findSubmissionId(targetUrl) {
+async function getLatestSubmissionId(targetUrl) {
   const target = new URL(targetUrl);
   const contestId = target.pathname.match(/^\/contests\/([^/]+)\//)?.[1];
   const taskId = decodeURIComponent(target.pathname.match(/\/tasks\/([^/?#]+)/)?.[1] || "");
-  if (!contestId) return null;
-  const response = await fetch(
-    `https://atcoder.jp/contests/${contestId}/submissions/me?_=${Date.now()}`,
-    { credentials: "include" }
-  );
-  if (!response.ok) return null;
-  const html = await response.text();
+  if (!contestId) return { ok: false, submissionId: null };
+  let html;
+  try {
+    const response = await fetch(
+      `https://atcoder.jp/contests/${contestId}/submissions/me?_=${Date.now()}`,
+      { credentials: "include" }
+    );
+    if (!response.ok) return { ok: false, submissionId: null };
+    html = await response.text();
+  } catch (error) {
+    console.error("[APCB] failed to read submission history", error);
+    return { ok: false, submissionId: null };
+  }
   const rows = html.match(/<tr[\s\S]*?<\/tr>/gi) || [];
   const row = rows.find(candidate =>
     candidate.includes(`/contests/${contestId}/tasks/${taskId}`) ||
     candidate.includes(`/tasks/${taskId}`)
   );
-  return row?.match(/\/submissions\/(\d+)/)?.[1] || null;
+  return {
+    ok: true,
+    submissionId: row?.match(/\/submissions\/(\d+)/)?.[1] || null
+  };
+}
+
+async function findSubmissionId(targetUrl, previousSubmissionId) {
+  const latest = await getLatestSubmissionId(targetUrl);
+  if (!latest.ok || !latest.submissionId ||
+      latest.submissionId === previousSubmissionId) return null;
+  return latest.submissionId;
 }
 
 async function pollSubmissionStatus(targetUrl, submissionId) {
@@ -1309,15 +1476,11 @@ async function pollSubmissionStatus(targetUrl, submissionId) {
 
 function showTransferPopup(pending) {
   const queueItem = findTransferQueueItemForPending(pending);
-  if (queueItem?.state === "submitted") {
-    showTransferPopupStatus("提出しました。採点中...", 5000);
+  if (queueItem && ["submitting", "submitted", "unverified", "failed", "finished"].includes(queueItem.state)) {
+    showTransferQueueProgress(queueItem);
     return;
   }
   if (queueItem?.state === "ac") return;
-  if (queueItem?.state === "finished") {
-    showTransferPopupStatus(`本家判定: ${queueItem.status || "終了"}`, 5000);
-    return;
-  }
 
   if (transferPopupDismissTimer) clearTimeout(transferPopupDismissTimer);
   transferPopupStatus?.remove();
@@ -1332,11 +1495,18 @@ function showTransferPopup(pending) {
   document.documentElement.append(transferPopupHost);
   transferPopupHost.replaceChildren();
   transferPopupSubmitted = false;
+  transferPopupSubmissionId = null;
 
   const target = new URL(pending.targetUrl);
   const contestId = target.pathname.match(/^\/contests\/([^/]+)\//)?.[1];
   const taskId = decodeURIComponent(target.pathname.match(/\/tasks\/([^/?#]+)/)?.[1] || "");
   if (!contestId || !taskId) return;
+  const submissionOwnerToken =
+    `${queueItem?.id || "missing"}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  let previousSubmissionId = queueItem?.previousSubmissionId || null;
+  let submissionStartInProgress = false;
+  let submissionSlotAcquired = false;
+  let nextSubmissionSlotAttemptAt = 0;
 
   const iframe = document.createElement("iframe");
   iframe.src = `https://atcoder.jp/contests/${contestId}/submit?taskScreenName=${encodeURIComponent(taskId)}`;
@@ -1417,30 +1587,80 @@ function showTransferPopup(pending) {
           showTransferPopupStatus("提出準備中...");
           return;
         }
+        if (submissionStartInProgress || Date.now() < nextSubmissionSlotAttemptAt) return;
+        if (!queueItem?.id) {
+          clearInterval(waitForm);
+          showTransferPopupStatus("提出キューを確認できませんでした", 5000);
+          return;
+        }
+        submissionStartInProgress = true;
+        const slot = await requestSubmissionSlot(queueItem.id, submissionOwnerToken);
+        if (!slot?.ok) {
+          submissionStartInProgress = false;
+          clearInterval(waitForm);
+          showTransferPopupStatus("提出を開始できませんでした", 5000);
+          return;
+        }
+        if (!slot.acquired) {
+          submissionStartInProgress = false;
+          if (slot.reason === "already_started") {
+            clearInterval(waitForm);
+            showTransferQueueProgress(slot.item || queueItem);
+          } else {
+            nextSubmissionSlotAttemptAt = Date.now() + 1500;
+            showTransferPopupStatus("別の提出を処理中...");
+          }
+          return;
+        }
+        submissionSlotAcquired = true;
         console.log("[APCB] source injection verified", sourceInjectionResult);
         transferPopupSubmitted = true;
         clearInterval(waitForm);
-        const submissionTimestamp = Date.now();
+        showTransferPopupStatus("提出前の履歴を確認中...");
+        const baseline = await getLatestSubmissionId(pending.targetUrl);
+        if (!baseline.ok) {
+          transferPopupSubmitted = false;
+          submissionStartInProgress = false;
+          submissionSlotAcquired = false;
+          await releaseSubmissionSlot(queueItem.id, submissionOwnerToken);
+          showTransferPopupStatus("提出前の履歴を確認できませんでした", 5000);
+          return;
+        }
+        previousSubmissionId = baseline.submissionId;
         const queue = getTransferQueue();
         const currentQueueItem = queue.find(item => item.id === queueItem?.id);
-        if (currentQueueItem) {
-          currentQueueItem.state = "submitted";
-          currentQueueItem.submittedAt = submissionTimestamp;
-          try {
-            await persistTransferQueue(queue);
-          } catch (error) {
-            transferPopupSubmitted = false;
-            currentQueueItem.state = "ready";
-            delete currentQueueItem.submittedAt;
-            setTransferQueue(queue);
-            clearInterval(pollStatus);
-            showTransferPopupStatus("提出状態を保存できませんでした", 5000);
-            console.error("[APCB] failed to persist submission state", error);
-            return;
-          }
+        if (!currentQueueItem) {
+          transferPopupSubmitted = false;
+          submissionStartInProgress = false;
+          submissionSlotAcquired = false;
+          await releaseSubmissionSlot(queueItem.id, submissionOwnerToken);
+          showTransferPopupStatus("提出状態を保存できませんでした", 5000);
+          return;
+        }
+        const submissionTimestamp = Date.now();
+        currentQueueItem.state = "submitting";
+        currentQueueItem.preSubmitBaselineCaptured = true;
+        currentQueueItem.previousSubmissionId = baseline.submissionId;
+        currentQueueItem.submittedAt = submissionTimestamp;
+        try {
+          await persistTransferQueue(queue);
+        } catch (error) {
+          transferPopupSubmitted = false;
+          currentQueueItem.state = "ready";
+          delete currentQueueItem.preSubmitBaselineCaptured;
+          delete currentQueueItem.previousSubmissionId;
+          delete currentQueueItem.submittedAt;
+          await setTransferQueue(queue);
+          await releaseSubmissionSlot(queueItem.id, submissionOwnerToken);
+          submissionSlotAcquired = false;
+          submissionStartInProgress = false;
+          clearInterval(pollStatus);
+          showTransferPopupStatus("提出状態を保存できませんでした", 5000);
+          console.error("[APCB] failed to persist submission state", error);
+          return;
         }
         submittedAt = Date.now();
-        showTransferPopupStatus("提出しました。採点中...");
+        showTransferPopupStatus("本家への受付を確認中...");
         const submitButton = form.querySelector("button[type='submit'], input[type='submit']");
         try {
           if (typeof form.requestSubmit === "function") {
@@ -1453,51 +1673,104 @@ function showTransferPopup(pending) {
           transferPopupSubmitted = false;
           if (currentQueueItem) {
             currentQueueItem.state = "ready";
+            delete currentQueueItem.preSubmitBaselineCaptured;
+            delete currentQueueItem.previousSubmissionId;
             delete currentQueueItem.submittedAt;
-            setTransferQueue(queue);
+            await setTransferQueue(queue);
           }
+          if (submissionSlotAcquired) {
+            await releaseSubmissionSlot(queueItem.id, submissionOwnerToken);
+            submissionSlotAcquired = false;
+          }
+          submissionStartInProgress = false;
           clearInterval(pollStatus);
           showTransferPopupStatus("提出を開始できませんでした", 5000);
           console.error("[APCB] native submission failed", error);
         }
       }, 250);
 
+      let statusPollInProgress = false;
       const pollStatus = setInterval(async () => {
-        if (!submittedAt) return;
+        if (!submittedAt || statusPollInProgress) return;
         if (Date.now() - submittedAt < 3000) return;
-        if (!transferPopupSubmissionId) {
-          transferPopupSubmissionId = await findSubmissionId(pending.targetUrl);
-          if (!transferPopupSubmissionId) return;
-          const queue = getTransferQueue();
-          const currentQueueItem = queue.find(item => item.id === queueItem?.id);
-          if (currentQueueItem) {
-            currentQueueItem.submissionId = transferPopupSubmissionId;
-            setTransferQueue(queue);
+        statusPollInProgress = true;
+        try {
+          if (!transferPopupSubmissionId) {
+            transferPopupSubmissionId = await findSubmissionId(
+              pending.targetUrl,
+              previousSubmissionId
+            );
+            if (!transferPopupSubmissionId) {
+              if (Date.now() - submittedAt >= 90000) {
+                clearInterval(pollStatus);
+                const queue = getTransferQueue();
+                const currentQueueItem = queue.find(item => item.id === queueItem?.id);
+                if (currentQueueItem) {
+                  currentQueueItem.state = "failed";
+                  currentQueueItem.status = "受付未確認";
+                  await persistTransferQueue(queue);
+                }
+                if (submissionSlotAcquired) {
+                  await releaseSubmissionSlot(queueItem.id, submissionOwnerToken);
+                  submissionSlotAcquired = false;
+                }
+                showTransferPopupStatus("本家で提出を確認できませんでした", 5000);
+              } else {
+                showTransferPopupStatus("本家への受付を確認中...");
+              }
+              return;
+            }
+            const queue = getTransferQueue();
+            const currentQueueItem = queue.find(item => item.id === queueItem?.id);
+            if (currentQueueItem) {
+              currentQueueItem.submissionId = transferPopupSubmissionId;
+              currentQueueItem.state = "submitted";
+              await persistTransferQueue(queue);
+            }
+            if (submissionSlotAcquired) {
+              await releaseSubmissionSlot(queueItem.id, submissionOwnerToken);
+              submissionSlotAcquired = false;
+            }
+            showTransferPopupStatus("提出受付済み。判定待ち...");
           }
-        }
-        const submitStatus = await pollSubmissionStatus(pending.targetUrl, transferPopupSubmissionId);
-        if (submitStatus === "AC") {
-          clearInterval(pollStatus);
-          showTransferPopupStatus("本家ACを確認しました", 5000);
-          const submitted = getSubmittedTasks();
-          submitted[normalizeAtCoderUrl(pending.targetUrl)] = {
-            status: "AC",
-            timestamp: Date.now(),
-            lectureUrl: pending.lectureUrl || ""
-          };
-          setSubmittedTasks(submitted);
-          const queue = getTransferQueue();
-          const currentQueueItem = queue.find(item => item.id === queueItem?.id);
-          if (currentQueueItem) {
-            currentQueueItem.state = "ac";
-            currentQueueItem.notificationClaimed = false;
-            setTransferQueue(queue);
+          const submitStatus = await pollSubmissionStatus(pending.targetUrl, transferPopupSubmissionId);
+          if (submitStatus === "AC") {
+            clearInterval(pollStatus);
+            showTransferPopupStatus("本家ACを確認しました", 5000);
+            const submitted = getSubmittedTasks();
+            submitted[normalizeAtCoderUrl(pending.targetUrl)] = {
+              status: "AC",
+              timestamp: Date.now(),
+              lectureUrl: pending.lectureUrl || ""
+            };
+            setSubmittedTasks(submitted);
+            const queue = getTransferQueue();
+            const currentQueueItem = queue.find(item => item.id === queueItem?.id);
+            if (currentQueueItem) {
+              currentQueueItem.state = "ac";
+              currentQueueItem.notificationClaimed = false;
+              setTransferQueue(queue);
+            }
+          } else if (submitStatus && /^(WJ|JUDGING)$/i.test(submitStatus)) {
+            showTransferPopupStatus("本家で採点中...");
+          } else if (!submitStatus) {
+            showTransferPopupStatus("提出受付済み。判定待ち...");
+          } else if (submitStatus) {
+            clearInterval(pollStatus);
+            const queue = getTransferQueue();
+            const currentQueueItem = queue.find(item => item.id === queueItem?.id);
+            if (currentQueueItem) {
+              currentQueueItem.state = "finished";
+              currentQueueItem.status = submitStatus;
+              setTransferQueue(queue);
+            }
+            showTransferPopupStatus(`本家判定: ${submitStatus}`, 5000);
           }
-        } else if (submitStatus && /^(WJ|JUDGING)$/i.test(submitStatus)) {
-          showTransferPopupStatus("提出しました。採点中...");
-        } else if (submitStatus) {
-          clearInterval(pollStatus);
-          showTransferPopupStatus(`本家判定: ${submitStatus}`, 5000);
+        } catch (error) {
+          console.error("[APCB] submission status check failed", error);
+          showTransferPopupStatus("提出受付済み。判定を確認中...");
+        } finally {
+          statusPollInProgress = false;
         }
       }, 3000);
     } catch (error) {
@@ -1562,8 +1835,6 @@ function main() {
   }, true);
 
   if (isLectureContestUrl(location.href)) {
-    const pending = getPendingTransfer();
-    if (pending) showTransferPopup(pending);
     renderGlobalQueueStatus();
     if (isExtensionContextValid()) {
       safeRuntimeSendMessage({ type: "pollTransferQueue" });

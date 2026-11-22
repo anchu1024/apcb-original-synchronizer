@@ -103,7 +103,8 @@ test("live Turnstile popup submits through a native form", () => {
   assert.match(source, /iframe\.src = `https:\/\/atcoder\.jp\/contests\/\$\{contestId\}\/submit\?taskScreenName=/);
   assert.match(source, /width:1px;height:1px;overflow:hidden/);
   assert.match(source, /個人認証中\.\.\./);
-  assert.match(source, /提出しました。採点中\.\.\./);
+  assert.match(source, /本家への受付を確認中\.\.\./);
+  assert.match(source, /本家で採点中\.\.\./);
   assert.match(source, /showTransferPopupStatus\("本家ACを確認しました", 5000\)/);
   assert.match(source, /}, 10000\)/);
   assert.match(source, /width:640px/);
@@ -117,9 +118,16 @@ test("live Turnstile popup submits through a native form", () => {
   assert.doesNotMatch(source, /script\.textContent/);
   assert.match(source, /function findTransferQueueItemForPending/);
   assert.match(source, /async function persistTransferQueue/);
-  assert.match(source, /queueId: queueItem\.id/);
-  assert.match(source, /queueItem\?\.state === "submitted"/);
+  assert.match(source, /queueId: queuedItem\.id/);
+  assert.match(source, /queueItem\.state === "submitted"/);
   assert.match(source, /currentQueueItem\.state = "submitted"/);
+  assert.match(source, /currentQueueItem\.state = "submitting"/);
+  assert.match(source, /await persistTransferQueue\(queue\)/);
+  assert.match(source, /preSubmitBaselineCaptured = true/);
+  assert.match(source, /previousSubmissionId = baseline\.submissionId/);
+  assert.match(source, /let previousSubmissionId = queueItem\?\.previousSubmissionId/);
+  assert.match(source, /pending\.targetUrl,\s*previousSubmissionId/);
+  assert.match(source, /latest\.submissionId === previousSubmissionId/);
   assert.match(source, /turnstileInput\.value\.length <= 20/);
   assert.match(source, /width:640px/);
   assert.match(source, /isExtensionContextValid/);
@@ -134,7 +142,28 @@ test("live Turnstile popup submits through a native form", () => {
     source.indexOf("let globalQueueHost")
   );
   assert.ok(
-    popupSource.indexOf('currentQueueItem.state = "submitted"') <
+    popupSource.indexOf('currentQueueItem.state = "submitting"') <
+    popupSource.indexOf("form.requestSubmit")
+  );
+  assert.ok(
+    popupSource.indexOf("requestSubmissionSlot(queueItem.id") <
+    popupSource.indexOf("getLatestSubmissionId(pending.targetUrl)")
+  );
+  assert.ok(
+    popupSource.indexOf("getLatestSubmissionId(pending.targetUrl)") <
+    popupSource.indexOf("form.requestSubmit")
+  );
+  const receiptIndex = popupSource.indexOf('currentQueueItem.state = "submitted"');
+  assert.ok(receiptIndex > popupSource.indexOf("form.requestSubmit"));
+  assert.ok(
+    popupSource.indexOf("releaseSubmissionSlot(queueItem.id", receiptIndex) > receiptIndex
+  );
+  assert.ok(
+    popupSource.indexOf("turnstileInput.value.length <= 20") <
+    popupSource.indexOf('currentQueueItem.state = "submitting"')
+  );
+  assert.ok(
+    popupSource.indexOf('currentQueueItem.state = "submitted"') >
     popupSource.indexOf("form.requestSubmit")
   );
 });
@@ -203,6 +232,28 @@ test("background keeps and polls the global submission queue", () => {
   assert.match(background, /notificationClaimed/);
   assert.match(background, /chrome\.alarms\.create/);
   assert.match(background, /chrome\.alarms\.onAlarm/);
+  assert.match(background, /item\.state === "submitted" && !item\.preSubmitBaselineCaptured/);
+  assert.match(background, /\["submitting", "submitted"\]\.includes\(item\.state\)/);
+  assert.match(background, /item\.previousSubmissionId/);
+  assert.match(background, /item\.state = "unverified"/);
+});
+
+test("concurrent transfers are deduplicated and serialized across tabs", () => {
+  const background = fs.readFileSync(
+    path.join(__dirname, "..", "background.js"),
+    "utf8"
+  );
+  assert.match(source, /type: "enqueueTransferQueueItem"/);
+  assert.match(source, /type: "mergeTransferQueue"/);
+  assert.match(background, /function withQueueMutation/);
+  assert.match(background, /queueMutationTail\.then\(operation, operation\)/);
+  assert.match(background, /candidate\.lectureSubmissionUrl === item\.lectureSubmissionUrl/);
+  assert.match(background, /type === "acquireSubmissionSlot"/);
+  assert.match(background, /type === "releaseSubmissionSlot"/);
+  assert.match(background, /item\.state !== "ready"/);
+  assert.match(background, /expectedState/);
+  const main = source.slice(source.indexOf("function main()"));
+  assert.doesNotMatch(main, /getPendingTransfer\(\)/);
 });
 
 test("Chrome extension uses storage and validated tab creation", () => {
@@ -265,7 +316,7 @@ test("AC transfer waits for submission code and language extraction", () => {
   assert.match(source, /setLegacySourceCode\(sourceCode\)/);
   assert.match(source, /const lectureSubmissionUrl = normalizeAtCoderUrl\(location\.href\)/);
   assert.match(source, /item\.lectureSubmissionUrl/);
-  assert.match(source, /existingQueueItem\.state === "submitted"/);
+  assert.match(source, /showTransferQueueProgress\(existingQueueItem\)/);
 });
 
 test("difficulty correction and official color palette", () => {
