@@ -104,7 +104,8 @@ test("live Turnstile popup submits through a native form", () => {
   assert.match(source, /form\.requestSubmit/);
   assert.match(source, /submit\(\);/);
   assert.match(source, /function setNativeSourceCode/);
-  assert.match(source, /sourceTextarea\?\.value\?\.trim/);
+  assert.match(source, /win\?\.ace\?\.edit/);
+  assert.match(source, /turnstileInput\.value\.length <= 20/);
   assert.match(source, /本家にも送信/);
   assert.match(source, /document\.addEventListener\("click", event =>/);
   assert.match(source, /event\.altKey/);

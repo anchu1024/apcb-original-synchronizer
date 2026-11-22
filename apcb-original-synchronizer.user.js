@@ -1079,22 +1079,25 @@ function showOnlyTurnstileContainer(iframeDocument) {
   const style = iframeDocument.createElement("style");
   style.textContent =
     "html,body{margin:0!important;padding:0!important;width:320px!important;height:220px!important;" +
-    "overflow:hidden!important;background:transparent!important}" +
-    "body *{visibility:hidden!important}" +
-    ".cf-challenge,.cf-turnstile,[data-sitekey],.cf-challenge iframe,.cf-turnstile iframe," +
-    "[data-sitekey] iframe{visibility:visible!important;display:block!important;" +
-    "position:fixed!important;left:8px!important;top:8px!important;" +
-    "z-index:2147483647!important}";
+    "overflow:hidden!important;background:transparent!important}";
   iframeDocument.head?.append(style);
 
-  let ancestor = container;
-  while (ancestor && ancestor !== iframeDocument.body) {
-    ancestor.style.setProperty("visibility", "visible", "important");
-    ancestor.style.setProperty("display", "block", "important");
-    ancestor = ancestor.parentElement;
-  }
+  const keep = new Set();
+  for (let el = container; el; el = el.parentElement) keep.add(el);
+  iframeDocument.querySelectorAll("body *").forEach(el => {
+    if (!keep.has(el) && !el.contains(container)) {
+      el.style.setProperty("visibility", "hidden", "important");
+      el.style.setProperty("display", "none", "important");
+    }
+  });
+  keep.forEach(el => {
+    el.style.setProperty("visibility", "visible", "important");
+  });
   container.style.setProperty("visibility", "visible", "important");
   container.style.setProperty("display", "block", "important");
+  container.style.setProperty("position", "fixed", "important");
+  container.style.setProperty("left", "8px", "important");
+  container.style.setProperty("top", "8px", "important");
   return container;
 }
 
@@ -1107,14 +1110,26 @@ function setNativeSubmitForm(iframeDocument, pending) {
   const form = findNativeSubmitForm(iframeDocument);
   if (!form) return null;
 
-  const taskInput = form.querySelector("input[name='data.TaskScreenName']");
-  if (taskInput) {
-    const taskMatch = new URL(pending.targetUrl).pathname.match(/\/tasks\/([^/?#]+)/);
-    if (taskMatch) taskInput.value = decodeURIComponent(taskMatch[1]);
+  const taskMatch = new URL(pending.targetUrl).pathname.match(/\/tasks\/([^/?#]+)/);
+  if (taskMatch) {
+    const taskSelect = form.querySelector("select[name='data.TaskScreenName']");
+    if (taskSelect) {
+      taskSelect.value = decodeURIComponent(taskMatch[1]);
+      taskSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    }
   }
 
-  const select = form.querySelector("select[name='data.LanguageId']");
-  if (select && pending.languageName) selectLanguageOnDocument(iframeDocument, select, pending.languageName);
+  const taskId = taskMatch ? decodeURIComponent(taskMatch[1]) : "";
+  const languageSelect = taskId
+    ? form.querySelector(`select[name='data.LanguageId'].current`) ||
+      form.querySelector(`#select-lang-${taskId} select[name='data.LanguageId']`) ||
+      form.querySelector("#select-lang select.current") ||
+      form.querySelector("select[name='data.LanguageId']")
+    : form.querySelector("select[name='data.LanguageId'].current") ||
+      form.querySelector("select[name='data.LanguageId']");
+  if (languageSelect && pending.languageName) {
+    selectLanguageOnDocument(iframeDocument, languageSelect, pending.languageName);
+  }
 
   setNativeSourceCode(form, pending.sourceCode);
   return form;
@@ -1122,9 +1137,9 @@ function setNativeSubmitForm(iframeDocument, pending) {
 
 function setNativeSourceCode(form, sourceCode) {
   const textareas = Array.from(form.querySelectorAll(
-    "textarea[name='sourceCode'], textarea[name='source'], textarea#sourceCode"
+    "textarea[name='sourceCode'], textarea[name='source'], textarea#sourceCode, " +
+    "textarea#plain-textarea"
   ));
-  if (textareas.length === 0) return false;
 
   let applied = false;
   textareas.forEach(textarea => {
@@ -1140,6 +1155,27 @@ function setNativeSourceCode(form, sourceCode) {
     });
     applied = applied || textarea.value === sourceCode;
   });
+
+  const win = form.ownerDocument.defaultView;
+  if (typeof win?.ace?.edit === "function") {
+    const editorElement = form.ownerDocument.getElementById("editor");
+    if (editorElement) {
+      const aceEditor = win.ace.edit(editorElement);
+      if (typeof aceEditor?.setValue === "function") {
+        aceEditor.setValue(sourceCode, -1);
+        applied = applied || aceEditor.getValue?.() === sourceCode;
+      }
+    }
+  }
+  if (typeof win?.jQuery === "function") {
+    win.jQuery(".editor").each((_index, element) => {
+      const editor = win.jQuery(element).data("editor");
+      if (typeof editor?.doc?.setValue === "function") {
+        editor.doc.setValue(sourceCode);
+        applied = true;
+      }
+    });
+  }
   return applied;
 }
 
@@ -1231,40 +1267,30 @@ function showTransferPopup(pending) {
     try {
       const doc = iframe.contentDocument;
       if (!doc) return;
-      showOnlyTurnstileContainer(doc);
-      const form = setNativeSubmitForm(doc, pending);
-      if (!form) {
-        status.textContent = "提出フォームを読み込み中";
-        return;
-      }
-      setNativeSourceCode(form, pending.sourceCode);
-      setTimeout(() => setNativeSourceCode(form, pending.sourceCode), 50);
-      setTimeout(() => setNativeSourceCode(form, pending.sourceCode), 500);
-
       const deadline = Date.now() + 60000;
-      const waitToken = setInterval(() => {
+      const waitForm = setInterval(() => {
+        showOnlyTurnstileContainer(doc);
+        const form = setNativeSubmitForm(doc, pending);
+        if (!form) {
+          status.textContent = "提出フォームを読み込み中";
+          if (Date.now() >= deadline) clearInterval(waitForm);
+          return;
+        }
         setNativeSourceCode(form, pending.sourceCode);
         const turnstileInput = form.querySelector("input[name='cf-turnstile-response']");
-        const tokenReady = turnstileInput
-          ? !!(turnstileInput.value && turnstileInput.value.length > 20)
-          : true;
-        if (!tokenReady && Date.now() < deadline) return;
-        if (!tokenReady) {
+        if (!turnstileInput || !turnstileInput.value || turnstileInput.value.length <= 20) {
           status.textContent = "Cloudflare認証を完了してください";
-          clearInterval(waitToken);
+          if (Date.now() >= deadline) clearInterval(waitForm);
           return;
         }
         if (transferPopupSubmitted) return;
         const sourceApplied = setNativeSourceCode(form, pending.sourceCode);
-        const sourceTextarea = form.querySelector(
-          "textarea[name='sourceCode'], textarea[name='source'], textarea#sourceCode"
-        );
-        if (!sourceApplied || !sourceTextarea?.value?.trim()) {
+        if (!sourceApplied) {
           status.textContent = "ソースコードを設定できませんでした";
           return;
         }
         transferPopupSubmitted = true;
-        clearInterval(waitToken);
+        clearInterval(waitForm);
         status.textContent = "提出しています";
         const submitButton = form.querySelector("button[type='submit'], input[type='submit']");
         if (typeof form.requestSubmit === "function") {
