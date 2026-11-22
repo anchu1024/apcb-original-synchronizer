@@ -169,6 +169,9 @@ test("AC transfer waits for submission code and language extraction", () => {
   assert.match(source, /cloneNode\(true\)/);
   assert.match(source, /navigator\.clipboard\?\.readText/);
   assert.match(source, /copyButton\.click\(\)/);
+  assert.match(source, /getAttribute\("data-target"\)/);
+  assert.match(source, /document\.getElementById\(targetId\)/);
+  assert.match(source, /copy-button data-target/);
   assert.match(source, /\[APCB\] source extracted from lecture page/);
   assert.match(source, /\[APCB\] pending transfer payload/);
   assert.match(source, /\[APCB\] original page payload/);
