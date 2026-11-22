@@ -3,6 +3,7 @@ const CONFIG = Object.freeze({
   PENDING_TRANSFER_TTL_MS: 10 * 60 * 1000,
   SUBMITTED_TASKS_KEY: "submitted_tasks",
   PENDING_TRANSFER_KEY: "pending_transfer",
+  TRANSFER_QUEUE_KEY: "apcb_transfer_queue",
   PROBLEM_MODELS_CACHE_KEY: "problem_models_cache",
   PROBLEM_MODELS_URL: "https://kenkoooo.com/atcoder/resources/problem-models.json",
   PROBLEM_MODELS_TTL_MS: 24 * 60 * 60 * 1000
@@ -11,6 +12,7 @@ const CONFIG = Object.freeze({
 let chromeStorageCache = {
   submitted_tasks: {},
   pending_transfer: null,
+  apcb_transfer_queue: [],
   problem_models_cache: null
 };
 
@@ -568,6 +570,15 @@ function showSubmissionDuplicate(targetUrl) {
 }
 
 let submissionTransferStarted = false;
+function getTransferQueue() {
+  const value = gmGetValue(CONFIG.TRANSFER_QUEUE_KEY, []);
+  return Array.isArray(value) ? value : [];
+}
+
+function setTransferQueue(queue) {
+  gmSetValue(CONFIG.TRANSFER_QUEUE_KEY, queue);
+}
+
 function monitorSubmissionDetail() {
   if (submissionTransferStarted) return;
   if (!isOwnSubmissionDetail()) return;
@@ -619,12 +630,22 @@ function monitorSubmissionDetail() {
         sourceCode,
         createdAt: Date.now()
       });
-
+      const queue = getTransferQueue();
+      const id = `${normalizedTarget}#${Date.now()}`;
+      queue.unshift({
+        id,
+        state: "ready",
+        targetUrl: normalizedTarget,
+        lectureUrl: normalizeAtCoderUrl(lectureUrl),
+        languageName,
+        sourceCode,
+        createdAt: Date.now()
+      });
+      setTransferQueue(queue.slice(-20));
       if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
-        chrome.runtime.sendMessage({ type: "openInTab", url: normalizedTarget });
-      } else {
-        window.open(normalizedTarget, "_blank");
+        chrome.runtime.sendMessage({ type: "refreshTransferQueue" });
       }
+      submissionTransferStarted = false;
       return;
     }
 
@@ -878,13 +899,6 @@ function hookOriginalSubmit() {
     const pending = getPendingTransfer();
     if (!pending) return;
     if (normalizeAtCoderUrl(location.href) !== normalizeAtCoderUrl(pending.targetUrl)) return;
-
-    const submitted = getSubmittedTasks();
-    submitted[normalizeAtCoderUrl(location.href)] = {
-      timestamp: Date.now(),
-      lectureUrl: pending.lectureUrl || document.referrer || ""
-    };
-    setSubmittedTasks(submitted);
     gmSetValue(CONFIG.PENDING_TRANSFER_KEY, null);
   });
 
@@ -927,7 +941,7 @@ function renderTaskListBadges() {
     if (!targetUrl) return;
     const normalized = normalizeAtCoderUrl(targetUrl);
 
-    if (!submitted[normalized]) {
+    if (submitted[normalized]?.status !== "AC") {
       targetLink.dataset.lectureSyncBadged = "false";
       targetLink.nextElementSibling?.classList?.contains("lecture-sync-ac-badge") &&
         targetLink.nextElementSibling.remove();
@@ -1012,9 +1026,82 @@ function observeSubmissionListColors() {
   setInterval(applyDifficultyDisplays, 1000);
 }
 
+let transferPopupRoot = null;
+function ensureTransferPopup() {
+  if (transferPopupRoot) return transferPopupRoot;
+  const host = document.createElement("div");
+  host.id = "apcb-transfer-popup-host";
+  host.style.cssText = "position:fixed;top:12px;right:12px;z-index:2147483647;";
+  const shadow = host.attachShadow({ mode: "open" });
+  document.documentElement.append(host);
+  transferPopupRoot = shadow;
+  renderTransferPopup();
+  return shadow;
+}
+
+function renderTransferPopup() {
+  if (!transferPopupRoot) return;
+  const queue = getTransferQueue();
+  transferPopupRoot.textContent = "";
+  if (queue.length === 0) return;
+
+  const style = document.createElement("style");
+  style.textContent =
+    ":host{} .box{width:320px;max-height:70vh;overflow:auto;background:#fff;color:#222;" +
+    "border:1px solid #ccc;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.25);font:13px sans-serif;padding:10px}" +
+    ".title{font-weight:bold;margin-bottom:8px}.item{border-top:1px solid #eee;padding:8px 0}" +
+    "button{cursor:pointer;margin-top:6px}.ac{color:#155724;font-weight:bold}.wa{color:#721c24;font-weight:bold}";
+  const box = document.createElement("div");
+  box.className = "box";
+  const title = document.createElement("div");
+  title.className = "title";
+  title.textContent = "本家提出キュー";
+  box.append(title);
+
+  queue.slice(0, 10).forEach(item => {
+    const row = document.createElement("div");
+    row.className = "item";
+    const name = item.targetUrl?.split("/").pop() || "problem";
+    const status = document.createElement("div");
+    status.textContent = `${name} / ${item.state === "ac" ? "本家AC" : item.state === "submitted" ? "提出済み・判定待ち" : item.state === "error" ? "エラー" : item.state === "submitting" ? "提出中" : "送信待ち"}`;
+    status.className = item.state === "ac" ? "ac" : item.state === "wa" || item.state === "error" ? "wa" : "";
+    row.append(status);
+    if (item.state === "ready") {
+      const button = document.createElement("button");
+      button.textContent = "本家にも送信";
+      button.addEventListener("click", () => {
+        button.disabled = true;
+        chrome.runtime.sendMessage({ type: "submitOriginalQueueItem", id: item.id });
+      });
+      row.append(button);
+    }
+    if (item.state === "ac" && !item.notificationClaimed) {
+      chrome.runtime.sendMessage(
+        { type: "claimTransferNotification", id: item.id },
+        response => {
+          if (!response?.claimed) {
+            status.textContent = `${name} / 本家AC（別タブで表示済み）`;
+          }
+        }
+      );
+    }
+    box.append(row);
+  });
+  transferPopupRoot.append(style, box);
+}
+
 function main() {
   if (typeof document === "undefined" || typeof location === "undefined") return;
   const pathname = new URL(location.href).pathname;
+  if (isLectureContestUrl(location.href)) {
+    ensureTransferPopup();
+    if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+      chrome.runtime.sendMessage({ type: "pollTransferQueue" });
+      setInterval(() => {
+        chrome.runtime.sendMessage({ type: "pollTransferQueue" });
+      }, 5000);
+    }
+  }
   if (/\/standings\/?$/.test(pathname)) {
     applyDifficultyDisplays();
     const observer = new MutationObserver(applyDifficultyDisplays);
@@ -1069,6 +1156,7 @@ if (typeof window !== "undefined") {
         [
           CONFIG.SUBMITTED_TASKS_KEY,
           CONFIG.PENDING_TRANSFER_KEY,
+          CONFIG.TRANSFER_QUEUE_KEY,
           CONFIG.PROBLEM_MODELS_CACHE_KEY
         ],
         values => {
@@ -1077,6 +1165,8 @@ if (typeof window !== "undefined") {
               values[CONFIG.SUBMITTED_TASKS_KEY] || {},
             pending_transfer:
               values[CONFIG.PENDING_TRANSFER_KEY] || null,
+            apcb_transfer_queue:
+              values[CONFIG.TRANSFER_QUEUE_KEY] || [],
             problem_models_cache:
               values[CONFIG.PROBLEM_MODELS_CACHE_KEY] || null
           };
@@ -1090,6 +1180,11 @@ if (typeof window !== "undefined") {
               if (changes.pending_transfer) {
                 chromeStorageCache.pending_transfer =
                   changes.pending_transfer.newValue || null;
+              }
+              if (changes.apcb_transfer_queue) {
+                chromeStorageCache.apcb_transfer_queue =
+                  changes.apcb_transfer_queue.newValue || [];
+                renderTransferPopup();
               }
               if (changes.problem_models_cache) {
                 chromeStorageCache.problem_models_cache =

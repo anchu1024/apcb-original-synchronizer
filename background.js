@@ -1,4 +1,221 @@
+async function getTransferQueue() {
+  const result = await chrome.storage.local.get("apcb_transfer_queue");
+  return Array.isArray(result.apcb_transfer_queue) ? result.apcb_transfer_queue : [];
+}
+
+async function setTransferQueue(queue) {
+  await chrome.storage.local.set({ apcb_transfer_queue: queue });
+}
+
+function decodeHtmlEntities(value) {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+function extractStatusFromHtml(html) {
+  const successMatch = html.match(
+    /class=["'][^"']*(?:label-success|badge-success|status-ac)[^"']*["'][^>]*>\s*(AC)\s*</i
+  );
+  if (successMatch) return "AC";
+  const statuses = ["WJ", "Judging", "AC", "WA", "TLE", "MLE", "RE", "CE", "OLE", "IE"];
+  for (const status of statuses) {
+    const regex = new RegExp(`(?:>|\\s)${status}(?:<|\\s)`, "i");
+    if (regex.test(html)) return status.toUpperCase();
+  }
+  return null;
+}
+
+async function submitOriginalQueueItem(id) {
+  const queue = await getTransferQueue();
+  const item = queue.find(entry => entry.id === id);
+  if (!item || item.state === "ac" || item.state === "submitting") return;
+  item.state = "submitting";
+  item.updatedAt = Date.now();
+  await setTransferQueue(queue);
+
+  try {
+    const target = new URL(item.targetUrl);
+    const contestMatch = target.pathname.match(/^\/contests\/([^/]+)\//);
+    const taskMatch = target.pathname.match(/\/tasks\/([^/?#]+)/);
+    if (!contestMatch || !taskMatch) throw new Error("invalid target");
+    const contestId = contestMatch[1];
+    const taskId = decodeURIComponent(taskMatch[1]);
+
+    const submitUrl = `https://atcoder.jp/contests/${contestId}/tasks/${taskId}/submit`;
+    const pageResponse = await fetch(submitUrl, { credentials: "include" });
+    if (!pageResponse.ok) throw new Error("submit page unavailable");
+    const html = await pageResponse.text();
+
+    const csrfMatch = html.match(/<input[^>]+name=["']csrf_token["'][^>]+value=["']([^"']+)["']/i)
+      || html.match(/<input[^>]+value=["']([^"']+)["'][^>]+name=["']csrf_token["']/i);
+    if (!csrfMatch) throw new Error("csrf_token unavailable");
+
+    const selectMatch = html.match(/<select[^>]+name=["']data\.LanguageId["'][\s\S]*?<\/select>/i);
+    if (!selectMatch) throw new Error("language select unavailable");
+    const options = Array.from(selectMatch[0].matchAll(/<option[^>]+value=["']([^"']+)["'][^>]*>([\s\S]*?)<\/option>/gi))
+      .map(match => ({
+        value: match[1],
+        text: decodeHtmlEntities(match[2].replace(/<[^>]+>/g, "").trim())
+      }));
+    const wanted = (item.languageName || "").trim().toLowerCase();
+    const exact = options.find(option =>
+      option.text.toLowerCase().replace(/\s+/g, " ") === wanted.replace(/\s+/g, " ")
+    );
+    const prefix = options.find(option =>
+      option.text.toLowerCase().startsWith(wanted) ||
+      wanted.startsWith(option.text.toLowerCase())
+    );
+    const selected = exact || prefix;
+    if (!selected) throw new Error("language unavailable");
+
+    const body = new URLSearchParams({
+      "data.LanguageId": selected.value,
+      sourceCode: item.sourceCode,
+      csrf_token: csrfMatch[1]
+    });
+    const submitResponse = await fetch(
+      `https://atcoder.jp/contests/${contestId}/submit`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: body.toString(),
+        redirect: "follow"
+      }
+    );
+    if (!submitResponse.ok) throw new Error(`submit failed: ${submitResponse.status}`);
+
+    let submissionId = submitResponse.url.match(/\/submissions\/(\d+)/)?.[1];
+    if (!submissionId) {
+      const meResponse = await fetch(
+        `https://atcoder.jp/contests/${contestId}/submissions/me`,
+        { credentials: "include" }
+      );
+      if (meResponse.ok) {
+        const meHtml = await meResponse.text();
+        const rows = meHtml.match(/<tr[\s\S]*?<\/tr>/gi) || [];
+        const matchingRow = rows.find(row =>
+          row.includes(`/contests/${contestId}/tasks/${taskId}`) ||
+          row.includes(`/tasks/${taskId}`)
+        );
+        submissionId = matchingRow?.match(/\/submissions\/(\d+)/)?.[1] || null;
+      }
+    }
+
+    item.state = "submitted";
+    item.submissionId = submissionId || null;
+    item.updatedAt = Date.now();
+    await setTransferQueue(queue);
+  } catch (error) {
+    item.state = "error";
+    item.error = String(error?.message || error);
+    item.updatedAt = Date.now();
+    await setTransferQueue(queue);
+  }
+}
+
+async function pollTransferQueue() {
+  const queue = await getTransferQueue();
+  let changed = false;
+  for (const item of queue) {
+    if (item.state !== "submitted") continue;
+    try {
+      const target = new URL(item.targetUrl);
+      const contestId = target.pathname.match(/^\/contests\/([^/]+)\//)?.[1];
+      const taskId = decodeURIComponent(target.pathname.match(/\/tasks\/([^/?#]+)/)?.[1] || "");
+      if (!contestId) continue;
+      if (!item.submissionId) {
+        const meResponse = await fetch(
+          `https://atcoder.jp/contests/${contestId}/submissions/me`,
+          { credentials: "include" }
+        );
+        if (meResponse.ok) {
+          const meHtml = await meResponse.text();
+          const rows = meHtml.match(/<tr[\s\S]*?<\/tr>/gi) || [];
+          const matchingRow = rows.find(row =>
+            row.includes(`/contests/${contestId}/tasks/${taskId}`) ||
+            row.includes(`/tasks/${taskId}`)
+          );
+          item.submissionId = matchingRow?.match(/\/submissions\/(\d+)/)?.[1] || null;
+          changed = true;
+        }
+      }
+      if (!item.submissionId) continue;
+      const detailResponse = await fetch(
+        `https://atcoder.jp/contests/${contestId}/submissions/${item.submissionId}`,
+        { credentials: "include" }
+      );
+      if (!detailResponse.ok) continue;
+      const status = extractStatusFromHtml(await detailResponse.text());
+      if (!status) continue;
+      item.status = status;
+      if (status === "AC") {
+        item.state = "ac";
+        item.notificationClaimed = false;
+        item.updatedAt = Date.now();
+        const stored = await chrome.storage.local.get("submitted_tasks");
+        const submitted = stored.submitted_tasks && typeof stored.submitted_tasks === "object"
+          ? stored.submitted_tasks
+          : {};
+        submitted[normalizeQueueUrl(item.targetUrl)] = {
+          status: "AC",
+          timestamp: Date.now(),
+          lectureUrl: item.lectureUrl || "",
+          submissionId: item.submissionId
+        };
+        await chrome.storage.local.set({ submitted_tasks: submitted });
+      } else if (!/^(WJ|JUDGING)$/i.test(status)) {
+        item.state = "wa";
+        item.updatedAt = Date.now();
+      }
+      changed = true;
+    } catch (_) {}
+  }
+  if (changed) await setTransferQueue(queue);
+}
+
+function normalizeQueueUrl(url) {
+  try {
+    const parsed = new URL(url);
+    parsed.search = "";
+    parsed.hash = "";
+    parsed.pathname = parsed.pathname.replace(/\/+$/, "") || "/";
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch (_) {
+    return String(url || "").split(/[?#]/)[0].replace(/\/+$/, "");
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "submitOriginalQueueItem" && typeof message.id === "string") {
+    submitOriginalQueueItem(message.id).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+  if (message?.type === "pollTransferQueue") {
+    pollTransferQueue().then(() => sendResponse({ ok: true }));
+    return true;
+  }
+  if (message?.type === "claimTransferNotification" && typeof message.id === "string") {
+    getTransferQueue().then(async queue => {
+      const item = queue.find(entry => entry.id === message.id);
+      if (!item || item.notificationClaimed) {
+        sendResponse({ claimed: false });
+        return;
+      }
+      item.notificationClaimed = true;
+      await setTransferQueue(queue);
+      sendResponse({ claimed: true });
+    });
+    return true;
+  }
+  if (message?.type === "refreshTransferQueue") {
+    pollTransferQueue().then(() => sendResponse({ ok: true }));
+    return true;
+  }
   if (message?.type === "setAtCoderSource" && typeof message.sourceCode === "string") {
     if (!sender.tab?.id) {
       sendResponse({ ok: false });

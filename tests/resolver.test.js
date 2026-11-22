@@ -147,6 +147,24 @@ test("Chrome MV3 manifest enables storage and AtCoder content scripts", () => {
   );
 });
 
+test("global transfer queue and popup are configured", () => {
+  assert.match(source, /apcb_transfer_queue/);
+  assert.match(source, /本家にも送信/);
+  assert.match(source, /本家提出キュー/);
+  assert.match(source, /claimTransferNotification/);
+  assert.match(source, /submitted_tasks/);
+  assert.doesNotMatch(source, /transferPopupRoot\.innerHTML/);
+  const background = fs.readFileSync(
+    new URL("../background.js", `file://${__dirname}/`).pathname,
+    "utf8"
+  );
+  assert.match(background, /submitOriginalQueueItem/);
+  assert.match(background, /pollTransferQueue/);
+  assert.match(background, /claimTransferNotification/);
+  assert.match(background, /credentials: "include"/);
+  assert.match(background, /status: "AC"/);
+});
+
 test("Chrome extension uses storage and validated tab creation", () => {
   assert.match(source, /chrome\.storage\.local/);
   assert.match(source, /chrome\.runtime\.sendMessage/);
