@@ -725,20 +725,38 @@ function extractLanguageName() {
 }
 
 function extractLectureProblemUrl() {
-  const links = Array.from(document.querySelectorAll("a[href*='/tasks/']"));
-  const currentContestLink = links.find(link => {
+  const contestId = new URL(location.href).pathname.split("/")[2];
+  if (!contestId) return null;
+  const problemRow = Array.from(document.querySelectorAll("tr")).find(row => {
+    const heading = row.querySelector("th");
+    const label = (heading?.textContent || "").trim();
+    return /^(問題|problem|task)$/i.test(label);
+  });
+  const problemLink = problemRow?.querySelector("a[href*='/tasks/']");
+  if (problemLink) {
+    try {
+      const url = new URL(problemLink.href, location.origin);
+      if (url.pathname.match(/^\/contests\/([^/]+)\/tasks\/[^/]+\/?$/)?.[1] === contestId) {
+        return normalizeAtCoderUrl(url.href);
+      }
+    } catch (_) {
+      return null;
+    }
+    return null;
+  }
+
+  const uniqueTaskUrls = new Map();
+  Array.from(document.querySelectorAll("a[href*='/tasks/']")).forEach(link => {
     try {
       const url = new URL(link.href, location.origin);
-      return url.pathname.includes(`/contests/${location.pathname.split("/")[2]}/tasks/`);
-    } catch (_) {
-      return false;
-    }
+      if (url.pathname.match(/^\/contests\/([^/]+)\/tasks\/[^/]+\/?$/)?.[1] === contestId) {
+        uniqueTaskUrls.set(normalizeAtCoderUrl(url.href), url.href);
+      }
+    } catch (_) {}
   });
-  if (currentContestLink) return normalizeAtCoderUrl(currentContestLink.href);
-
-  const canonical = document.querySelector("link[rel='canonical']");
-  if (canonical && /\/tasks\/[^/]+/.test(canonical.href)) return canonical.href;
-  return location.href;
+  return uniqueTaskUrls.size === 1
+    ? normalizeAtCoderUrl(uniqueTaskUrls.values().next().value)
+    : null;
 }
 
 function findStatusElement() {
@@ -1322,7 +1340,12 @@ function showTransferQueueProgress(queueItem) {
       showTransferPopupStatus("本家への受付を確認中...", 5000);
     }
   } else if (queueItem.state === "unverified" || queueItem.state === "failed") {
-    showTransferPopupStatus("本家の提出を確認できませんでした。AtCoder側を確認してください", 5000);
+    const message = queueItem.status === "対象不明"
+      ? "対象のコンテスト/問題が見つからず、提出を中止しました"
+      : queueItem.status === "429_LIMIT"
+        ? "AtCoderの制限が続いたため確認を中止しました。提出一覧を確認してください"
+        : "本家の提出を確認できませんでした。AtCoder側を確認してください";
+    showTransferPopupStatus(message, 5000);
   } else if (queueItem.state === "finished") {
     showTransferPopupStatus(`本家判定: ${queueItem.status || "終了"}`, 5000);
   }
@@ -1347,25 +1370,44 @@ function showOnlyTurnstileContainer(iframeDocument) {
   return isolateTurnstileInIframe(iframeDocument);
 }
 
-function findNativeSubmitForm(iframeDocument) {
-  return iframeDocument?.querySelector("form[action*='/submit']")
-    || iframeDocument?.querySelector("form");
+function findNativeSubmitForm(iframeDocument, contestId) {
+  if (!iframeDocument || !contestId) return null;
+  const expectedPath = `/contests/${contestId}/submit`;
+  return Array.from(iframeDocument.querySelectorAll("form")).find(form => {
+    try {
+      const action = new URL(
+        form.getAttribute("action") || iframeDocument.location.href,
+        iframeDocument.location.href
+      );
+      return action.origin === "https://atcoder.jp" &&
+        action.pathname.replace(/\/+$/, "") === expectedPath;
+    } catch (_) {
+      return false;
+    }
+  }) || null;
 }
 
-function setNativeSubmitForm(iframeDocument, pending) {
-  const form = findNativeSubmitForm(iframeDocument);
-  if (!form) return null;
-
-  const taskMatch = new URL(pending.targetUrl).pathname.match(/\/tasks\/([^/?#]+)/);
-  if (taskMatch) {
-    const taskSelect = form.querySelector("select[name='data.TaskScreenName']");
-    if (taskSelect) {
-      taskSelect.value = decodeURIComponent(taskMatch[1]);
-      taskSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    }
+function setNativeSubmitForm(iframeDocument, pending, contestId, taskId) {
+  if (!iframeDocument || !contestId || !taskId) return null;
+  try {
+    const pageUrl = new URL(iframeDocument.location.href);
+    if (pageUrl.origin !== "https://atcoder.jp" ||
+        pageUrl.pathname !== `/contests/${contestId}/submit` ||
+        pageUrl.searchParams.get("taskScreenName") !== taskId) return null;
+  } catch (_) {
+    return null;
   }
 
-  const taskId = taskMatch ? decodeURIComponent(taskMatch[1]) : "";
+  const form = findNativeSubmitForm(iframeDocument, contestId);
+  if (!form) return null;
+
+  const taskSelect = form.querySelector("select[name='data.TaskScreenName']");
+  if (!taskSelect ||
+      !Array.from(taskSelect.options).some(option => option.value === taskId)) return null;
+  taskSelect.value = taskId;
+  taskSelect.dispatchEvent(new Event("change", { bubbles: true }));
+  if (taskSelect.value !== taskId) return null;
+
   const languageSelect = taskId
     ? form.querySelector(`select[name='data.LanguageId'].current`) ||
       form.querySelector(`#select-lang-${taskId} select`) ||
@@ -1378,6 +1420,19 @@ function setNativeSubmitForm(iframeDocument, pending) {
   }
 
   return form;
+}
+
+async function failTransferQueueItem(queueId, status) {
+  const queue = getTransferQueue();
+  const item = queue.find(candidate => candidate.id === queueId);
+  if (!item || item.state !== "ready") return;
+  item.state = "failed";
+  item.status = status;
+  try {
+    await persistTransferQueue(queue);
+  } catch (error) {
+    console.error("[APCB] failed to persist transfer failure", error);
+  }
 }
 
 function setNativeSourceCodeInPage(sourceCode, contestId, taskId) {
@@ -1438,6 +1493,38 @@ function submissionRowMatchesTask(row, contestId, taskId) {
   });
 }
 
+function getRetryAfterMs(response, fallbackMs) {
+  const retryAfter = response.headers?.get("Retry-After");
+  if (!retryAfter) return fallbackMs;
+  const seconds = Number(retryAfter);
+  if (Number.isFinite(seconds)) {
+    return Math.max(1000, Math.min(seconds * 1000, 24 * 60 * 60 * 1000));
+  }
+  const date = Date.parse(retryAfter);
+  if (Number.isFinite(date)) {
+    return Math.max(1000, Math.min(date - Date.now(), 24 * 60 * 60 * 1000));
+  }
+  return fallbackMs;
+}
+
+async function fetchAtCoderWith429Retry(url, options, maxRetries = 3) {
+  for (let attempt = 0; ; attempt++) {
+    const response = await fetch(url, options);
+    if (response.status !== 429) return response;
+    const retryAfterMs = getRetryAfterMs(
+      response,
+      Math.min(60000, 2000 * (2 ** attempt))
+    );
+    if (attempt >= maxRetries) {
+      const error = new Error("AtCoder rate limit reached");
+      error.status = 429;
+      error.retryAfterMs = retryAfterMs;
+      throw error;
+    }
+    await new Promise(resolve => setTimeout(resolve, retryAfterMs));
+  }
+}
+
 async function getLatestSubmissionId(targetUrl) {
   const target = new URL(targetUrl);
   const contestId = target.pathname.match(/^\/contests\/([^/]+)\//)?.[1];
@@ -1445,7 +1532,7 @@ async function getLatestSubmissionId(targetUrl) {
   if (!contestId) return { ok: false, submissionId: null };
   let html;
   try {
-    const response = await fetch(
+    const response = await fetchAtCoderWith429Retry(
       `https://atcoder.jp/contests/${contestId}/submissions/me?_=${Date.now()}`,
       { credentials: "include" }
     );
@@ -1453,7 +1540,12 @@ async function getLatestSubmissionId(targetUrl) {
     html = await response.text();
   } catch (error) {
     console.error("[APCB] failed to read submission history", error);
-    return { ok: false, submissionId: null };
+    return {
+      ok: false,
+      submissionId: null,
+      status: error.status,
+      retryAfterMs: error.retryAfterMs
+    };
   }
   const rows = html.match(/<tr[\s\S]*?<\/tr>/gi) || [];
   const row = rows.find(candidate =>
@@ -1467,6 +1559,12 @@ async function getLatestSubmissionId(targetUrl) {
 
 async function findSubmissionId(targetUrl, previousSubmissionId) {
   const latest = await getLatestSubmissionId(targetUrl);
+  if (latest.status === 429) {
+    const error = new Error("AtCoder rate limit reached");
+    error.status = 429;
+    error.retryAfterMs = latest.retryAfterMs;
+    throw error;
+  }
   if (!latest.ok || !latest.submissionId ||
       latest.submissionId === previousSubmissionId) return null;
   return latest.submissionId;
@@ -1477,7 +1575,7 @@ async function pollSubmissionStatus(targetUrl, submissionId) {
   const contestId = target.pathname.match(/^\/contests\/([^/]+)\//)?.[1];
   if (!contestId || !submissionId) return null;
   try {
-    const response = await fetch(
+    const response = await fetchAtCoderWith429Retry(
       `https://atcoder.jp/contests/${contestId}/submissions/${submissionId}?_=${Date.now()}`,
       { credentials: "include" }
     );
@@ -1488,6 +1586,7 @@ async function pollSubmissionStatus(targetUrl, submissionId) {
     return match?.[1]?.toUpperCase() || null;
   } catch (error) {
     console.error("[APCB] failed to read original submission status", error);
+    if (error.status === 429) throw error;
     return null;
   }
 }
@@ -1537,7 +1636,17 @@ function showTransferPopup(pending) {
   let challengeRevealed = false;
   let challengeRevealTimer = null;
   iframe.addEventListener("load", () => {
-    if (submittedAt) return;
+    if (submittedAt) {
+      try {
+        const responseText = iframe.contentDocument?.body?.textContent || "";
+        if (/\b429\b|too many requests/i.test(responseText)) {
+          showTransferPopupStatus("本家がレート制限中です。提出受付を再確認しています...");
+        }
+      } catch (error) {
+        console.error("[APCB] could not inspect submit response", error);
+      }
+      return;
+    }
     try {
       const doc = iframe.contentDocument;
       if (!doc) return;
@@ -1547,7 +1656,8 @@ function showTransferPopup(pending) {
         challengeRevealTimer = null;
         const token = doc.querySelector("input[name='cf-turnstile-response']");
         if (!transferPopupHost || submittedAt ||
-            (token?.value && token.value.length > 20)) return;
+            (token?.value && token.value.length > 20) ||
+            !setNativeSubmitForm(doc, pending, contestId, taskId)) return;
         transferPopupHost.style.cssText =
           "position:fixed;top:12px;right:12px;width:640px;height:720px;overflow:visible;" +
           "z-index:2147483646;opacity:1;pointer-events:auto;background:#fff;" +
@@ -1557,11 +1667,15 @@ function showTransferPopup(pending) {
       let sourceInjectionStarted = false;
       let sourceInjectionResult = null;
       const waitForm = setInterval(async () => {
-        const form = setNativeSubmitForm(doc, pending);
+        const form = setNativeSubmitForm(doc, pending, contestId, taskId);
         if (!form) {
           if (Date.now() >= deadline) {
             clearInterval(waitForm);
-            showTransferPopupStatus("提出画面を読み込めませんでした", 5000);
+            await failTransferQueueItem(queueItem?.id, "対象不明");
+            showTransferPopupStatus(
+              "対象のコンテスト/問題が見つからず、提出を中止しました",
+              5000
+            );
           }
           return;
         }
@@ -1671,6 +1785,28 @@ function showTransferPopup(pending) {
           console.error("[APCB] failed to persist submission state", error);
           return;
         }
+        const currentForm = setNativeSubmitForm(
+          iframe.contentDocument,
+          pending,
+          contestId,
+          taskId
+        );
+        if (currentForm !== form) {
+          currentQueueItem.state = "failed";
+          currentQueueItem.status = "対象不明";
+          await persistTransferQueue(queue);
+          if (submissionSlotAcquired) {
+            await releaseSubmissionSlot(queueItem.id, submissionOwnerToken);
+            submissionSlotAcquired = false;
+          }
+          submissionStartInProgress = false;
+          clearInterval(pollStatus);
+          showTransferPopupStatus(
+            "対象のコンテスト/問題が一致しないため、提出を中止しました",
+            5000
+          );
+          return;
+        }
         submittedAt = Date.now();
         showTransferPopupStatus("本家への受付を確認中...");
         const submitButton = form.querySelector("button[type='submit'], input[type='submit']");
@@ -1702,8 +1838,11 @@ function showTransferPopup(pending) {
       }, 250);
 
       let statusPollInProgress = false;
+      let statusRateLimitFailures = 0;
+      let nextStatusPollAt = 0;
       const pollStatus = setInterval(async () => {
         if (!submittedAt || statusPollInProgress) return;
+        if (Date.now() < nextStatusPollAt) return;
         if (Date.now() - submittedAt < 3000) return;
         statusPollInProgress = true;
         try {
@@ -1752,6 +1891,7 @@ function showTransferPopup(pending) {
             showTransferPopupStatus("提出受付済み。判定待ち...");
           }
           const submitStatus = await pollSubmissionStatus(pending.targetUrl, transferPopupSubmissionId);
+          statusRateLimitFailures = 0;
           if (submitStatus === "AC") {
             clearInterval(pollStatus);
             showTransferPopupStatus("本家ACを確認しました", 5000);
@@ -1802,7 +1942,36 @@ function showTransferPopup(pending) {
           }
         } catch (error) {
           console.error("[APCB] submission status check failed", error);
-          if (Date.now() - submittedAt >= CONFIG.JUDGING_NOTICE_TIMEOUT_MS) {
+          if (error.status === 429) {
+            statusRateLimitFailures++;
+            if (statusRateLimitFailures >= 5) {
+              clearInterval(pollStatus);
+              const queue = getTransferQueue();
+              const currentQueueItem = queue.find(item => item.id === queueItem?.id);
+              if (currentQueueItem) {
+                currentQueueItem.state = "failed";
+                currentQueueItem.status = "429_LIMIT";
+                try {
+                  await persistTransferQueue(queue);
+                } catch (persistError) {
+                  console.error("[APCB] failed to persist rate-limit failure", persistError);
+                }
+              }
+              if (submissionSlotAcquired) {
+                await releaseSubmissionSlot(queueItem.id, submissionOwnerToken);
+                submissionSlotAcquired = false;
+              }
+              showTransferPopupStatus(
+                "AtCoderの制限が続いたため確認を中止しました。提出一覧を確認してください",
+                5000
+              );
+            } else {
+              nextStatusPollAt = Date.now() + (error.retryAfterMs || 5000);
+              showTransferPopupStatus(
+                `AtCoderの制限中です。${statusRateLimitFailures}/5回目の再試行を待っています...`
+              );
+            }
+          } else if (Date.now() - submittedAt >= CONFIG.JUDGING_NOTICE_TIMEOUT_MS) {
             clearInterval(pollStatus);
             showTransferPopupStatus(
               "本家の判定を取得できません。提出一覧を確認してください",

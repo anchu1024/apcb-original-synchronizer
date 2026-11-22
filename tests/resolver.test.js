@@ -62,6 +62,16 @@ test("sanitizes known pasted garbage at source boundaries", () => {
   assert.equal(result, "#include <bits/stdc++.h>\nint main() {}");
 });
 
+test("submission task extraction avoids arbitrary task links", () => {
+  const extraction = source.slice(
+    source.indexOf("function extractLectureProblemUrl"),
+    source.indexOf("function findStatusElement")
+  );
+  assert.match(extraction, /label = \(heading\?\.textContent \|\| ""\)\.trim\(\)/);
+  assert.match(extraction, /uniqueTaskUrls\.size === 1/);
+  assert.doesNotMatch(extraction, /return location\.href/);
+});
+
 test("rejects non-lecture contests and malformed task IDs", () => {
   const scriptWindow = loadScript();
   assert.equal(
@@ -209,6 +219,42 @@ test("temporary status-fetch failures do not reject the polling promise", async 
     ),
     null
   );
+});
+
+test("429 retries use Retry-After and stop after bounded attempts", () => {
+  const background = fs.readFileSync(
+    path.join(__dirname, "..", "background.js"),
+    "utf8"
+  );
+  assert.match(source, /async function fetchAtCoderWith429Retry/);
+  assert.match(source, /if \(attempt >= maxRetries\)/);
+  assert.match(source, /Retry-After/);
+  assert.match(background, /async function fetchAtCoderWith429Retry/);
+  assert.match(background, /rateLimitRetryCount >= 5/);
+  assert.match(background, /nextStatusCheckAt/);
+  assert.match(source, /statusRateLimitFailures >= 5/);
+});
+
+test("native submission requires an exact contest form and task selection", () => {
+  const popupSource = source.slice(
+    source.indexOf("function findNativeSubmitForm"),
+    source.indexOf("function setNativeSourceCodeInPage")
+  );
+  assert.match(popupSource, /action\.origin === "https:\/\/atcoder\.jp"/);
+  assert.match(popupSource, /expectedPath = `\/contests\/\$\{contestId\}\/submit`/);
+  assert.match(popupSource, /action\.pathname\.replace/);
+  assert.match(popupSource, /option\.value === taskId/);
+  assert.match(popupSource, /taskSelect\.value !== taskId/);
+
+  const transferPopupSource = source.slice(
+    source.indexOf("function showTransferPopup"),
+    source.indexOf("let globalQueueHost")
+  );
+  assert.ok(
+    transferPopupSource.indexOf("if (currentForm !== form)") <
+    transferPopupSource.indexOf("form.requestSubmit")
+  );
+  assert.match(source, /対象のコンテスト\/問題が見つからず、提出を中止しました/);
 });
 
 test("recognizes submission detail and list routes generically", () => {

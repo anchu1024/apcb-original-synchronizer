@@ -124,8 +124,40 @@ function submissionRowMatchesTask(row, contestId, taskId) {
   });
 }
 
+function getRetryAfterMs(response, fallbackMs) {
+  const retryAfter = response.headers?.get("Retry-After");
+  if (!retryAfter) return fallbackMs;
+  const seconds = Number(retryAfter);
+  if (Number.isFinite(seconds)) {
+    return Math.max(1000, Math.min(seconds * 1000, 24 * 60 * 60 * 1000));
+  }
+  const date = Date.parse(retryAfter);
+  if (Number.isFinite(date)) {
+    return Math.max(1000, Math.min(date - Date.now(), 24 * 60 * 60 * 1000));
+  }
+  return fallbackMs;
+}
+
+async function fetchAtCoderWith429Retry(url, options, maxRetries = 3) {
+  for (let attempt = 0; ; attempt++) {
+    const response = await fetch(url, options);
+    if (response.status !== 429) return response;
+    const retryAfterMs = getRetryAfterMs(
+      response,
+      Math.min(60000, 2000 * (2 ** attempt))
+    );
+    if (attempt >= maxRetries) {
+      const error = new Error("AtCoder rate limit reached");
+      error.status = 429;
+      error.retryAfterMs = retryAfterMs;
+      throw error;
+    }
+    await new Promise(resolve => setTimeout(resolve, retryAfterMs));
+  }
+}
+
 async function findSubmissionIdFromMe(contestId, taskId, previousSubmissionId) {
-  const response = await fetch(
+  const response = await fetchAtCoderWith429Retry(
     `https://atcoder.jp/contests/${contestId}/submissions/me?_=${Date.now()}`,
     { credentials: "include" }
   );
@@ -140,7 +172,7 @@ async function findSubmissionIdFromMe(contestId, taskId, previousSubmissionId) {
 }
 
 async function getSubmissionStatus(contestId, submissionId) {
-  const response = await fetch(
+  const response = await fetchAtCoderWith429Retry(
     `https://atcoder.jp/contests/${contestId}/submissions/${submissionId}?_=${Date.now()}`,
     { credentials: "include" }
   );
@@ -157,6 +189,7 @@ async function pollTransferQueue() {
 
   for (const item of queue) {
     if (!["submitting", "submitted"].includes(item.state)) continue;
+    if (item.nextStatusCheckAt && Date.now() < item.nextStatusCheckAt) continue;
     const original = { ...item };
     let acRecord = null;
     try {
@@ -203,8 +236,19 @@ async function pollTransferQueue() {
           }
         }
       }
+      delete item.rateLimitRetryCount;
+      delete item.nextStatusCheckAt;
     } catch (error) {
-      if (item.state === "submitting" &&
+      if (error.status === 429) {
+        item.rateLimitRetryCount = (item.rateLimitRetryCount || 0) + 1;
+        if (item.rateLimitRetryCount >= 5) {
+          item.state = "failed";
+          item.status = "429_LIMIT";
+          delete item.nextStatusCheckAt;
+        } else {
+          item.nextStatusCheckAt = Date.now() + (error.retryAfterMs || 5000);
+        }
+      } else if (item.state === "submitting" &&
           Date.now() - (item.submittedAt || 0) >= 90000) {
         item.state = "failed";
         item.status = "受付未確認";
