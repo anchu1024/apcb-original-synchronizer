@@ -1089,9 +1089,31 @@ function setNativeSubmitForm(iframeDocument, pending) {
   const select = form.querySelector("select[name='data.LanguageId']");
   if (select && pending.languageName) selectLanguageOnDocument(iframeDocument, select, pending.languageName);
 
-  const textarea = form.querySelector("textarea[name='sourceCode']");
-  if (textarea) textarea.value = pending.sourceCode;
+  setNativeSourceCode(form, pending.sourceCode);
   return form;
+}
+
+function setNativeSourceCode(form, sourceCode) {
+  const textareas = Array.from(form.querySelectorAll(
+    "textarea[name='sourceCode'], textarea[name='source'], textarea#sourceCode"
+  ));
+  if (textareas.length === 0) return false;
+
+  let applied = false;
+  textareas.forEach(textarea => {
+    const prototype = Object.getPrototypeOf(textarea);
+    const descriptor = prototype && Object.getOwnPropertyDescriptor(prototype, "value");
+    if (descriptor?.set) {
+      descriptor.set.call(textarea, sourceCode);
+    } else {
+      textarea.value = sourceCode;
+    }
+    ["input", "change", "keyup"].forEach(type => {
+      textarea.dispatchEvent(new Event(type, { bubbles: true }));
+    });
+    applied = applied || textarea.value === sourceCode;
+  });
+  return applied;
 }
 
 function selectLanguageOnDocument(doc, select, languageName) {
@@ -1188,12 +1210,17 @@ function showTransferPopup(pending) {
         status.textContent = "提出フォームを読み込み中";
         return;
       }
+      setNativeSourceCode(form, pending.sourceCode);
+      setTimeout(() => setNativeSourceCode(form, pending.sourceCode), 50);
+      setTimeout(() => setNativeSourceCode(form, pending.sourceCode), 500);
 
       const deadline = Date.now() + 60000;
       const waitToken = setInterval(() => {
+        setNativeSourceCode(form, pending.sourceCode);
         const turnstileInput = form.querySelector("input[name='cf-turnstile-response']");
-        const tokenReady = !turnstileInput
-          || (turnstileInput.value && turnstileInput.value.length > 20);
+        const tokenReady = turnstileInput
+          ? !!(turnstileInput.value && turnstileInput.value.length > 20)
+          : true;
         if (!tokenReady && Date.now() < deadline) return;
         if (!tokenReady) {
           status.textContent = "Cloudflare認証を完了してください";
@@ -1201,6 +1228,14 @@ function showTransferPopup(pending) {
           return;
         }
         if (transferPopupSubmitted) return;
+        const sourceApplied = setNativeSourceCode(form, pending.sourceCode);
+        const sourceTextarea = form.querySelector(
+          "textarea[name='sourceCode'], textarea[name='source'], textarea#sourceCode"
+        );
+        if (!sourceApplied || !sourceTextarea?.value?.trim()) {
+          status.textContent = "ソースコードを設定できませんでした";
+          return;
+        }
         transferPopupSubmitted = true;
         clearInterval(waitToken);
         status.textContent = "提出しています";
