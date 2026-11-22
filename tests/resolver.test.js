@@ -83,8 +83,8 @@ test("task-list badges use isolated row DOM APIs and tbody observation", () => {
   assert.match(source, /observer\.observe\(tbody,/);
   assert.match(source, /#28a745", "important"\)/);
   assert.match(source, /#ffffff", "important"\)/);
-  assert.doesNotMatch(source, /lecture-sync-ac-remove/);
-  assert.doesNotMatch(source, /removeButton/);
+  assert.match(source, /lecture-sync-ac-remove/);
+  assert.match(source, /\[解除\]/);
   assert.doesNotMatch(source, /td:nth-child/);
 });
 
